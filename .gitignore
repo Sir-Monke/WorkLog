@@ -1,0 +1,6 @@
+xcuserdata/
+DerivedData/
+build/
+.DS_Store
+history.json
+history.unreadable.json
