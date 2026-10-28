@@ -21,6 +21,7 @@
 
 1. Download **[WorkLog.zip](https://github.com/Sir-Monke/WorkLog/releases/latest/download/WorkLog.zip)** and unzip it.
 2. Open **WorkLog**. It moves itself into Applications, starts at login and lives in your menu bar.
+   If macOS won't open it the first time, go to System Settings › Privacy & Security and click **Open Anyway**.
 3. Choose the folder with your repos and notes. Your git name and email are filled in for you.
 
 ## What it does
