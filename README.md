@@ -1,53 +1,60 @@
 <h1 align="center">WorkLog <img src="Assets.xcassets/AppIcon.appiconset/icon_128x128@2x.png" height="40" align="top" alt=""></h1>
 
 <p align="center">
-  A macOS menu bar app that counts the days you work outside your contract, using your git commits and file edits as proof.
+  Counts the days you work outside your contract, using your git commits as proof.
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/macOS-13%2B-D6943D?logo=apple&logoColor=white" alt="macOS 13+">
-  <img src="https://img.shields.io/badge/Swift-5-D6943D?logo=swift&logoColor=white" alt="Swift 5">
-  <img src="https://img.shields.io/badge/SwiftUI-menu%20bar-D6943D" alt="SwiftUI menu bar app">
+  <a href="https://github.com/Sir-Monke/WorkLog/releases/latest"><img src="https://img.shields.io/badge/download-macOS%2013%2B-D6943D?logo=apple&logoColor=white" alt="Download for macOS 13+"></a>
+  <img src="https://img.shields.io/badge/licence-MIT-D6943D" alt="MIT licence">
+  <img src="https://img.shields.io/badge/built%20with-SwiftUI-D6943D?logo=swift&logoColor=white" alt="Built with SwiftUI">
 </p>
 
 <p align="center">
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="docs/hero-dark.png">
-    <img src="docs/hero-light.png" width="840" alt="Two WorkLog panels: the month overview with a Copy for Slack button, and a selected Saturday with its note">
+    <source media="(prefers-color-scheme: dark)" srcset="docs/demo-dark.webp">
+    <img src="docs/demo-light.webp" width="760" alt="Clicking WorkLog in the menu bar, opening a Saturday to see its note, then copying the month for Slack">
   </picture>
 </p>
 
+## Install
+
+1. Download **[WorkLog.zip](https://github.com/Sir-Monke/WorkLog/releases/latest/download/WorkLog.zip)** and unzip it.
+2. Open **WorkLog**. It moves itself into Applications, starts at login and lives in your menu bar.
+3. Choose the folder with your repos and notes. Your git name and email are filled in for you.
+
 ## What it does
 
-- **Finds your work.** Scans your repos and notes folder every 10 minutes for commits and edited files.
-- **Counts extra days.** Marks them on a month calendar and totals the gross pay.
+- **Finds your work.** Checks your repos and notes every 10 minutes for commits and edited files.
+- **Counts extra days.** Any day outside your contracted days with work on it, with the gross pay.
 - **Writes the notes.** One line per day from Claude Code, or type your own.
 - **Ready for Slack.** Copies the month as plain text in one click.
-- **Keeps history safe.** Past months lock, and a day you remove stays removed.
+- **Keeps history safe.** Past months lock, a new day rate only applies from the day you set it, and a day you remove stays removed.
 
-## Setup
+## Settings
 
-1. Open `WorkLog.xcodeproj` in Xcode.
-2. Set these at the top of `WorkLog.swift`:
+Click the gear in the panel.
 
-   | Setting | What it is |
-   | --- | --- |
-   | `root` | Folder with your repo clones and notes |
-   | `myAuthors` | Your git author name or email |
-   | `contractStart` | Date to start counting from |
-   | `contractedWeekdays` | Your normal working days (Sunday = 1) |
-   | `dayRates` | Your gross day rate, from a given date |
+| Setting | What it does |
+| --- | --- |
+| Work folder | Where your repo clones and notes live |
+| Git name or email | Whose commits count |
+| Contracted days | Your normal working days; any other day you work is extra |
+| Count from | The first day to count |
+| Day rate | Gross pay per extra day, in your currency |
 
-3. Run. WorkLog copies itself into Applications, opens from there and starts at login.
+## Privacy and AI notes
 
-## AI notes
+Everything stays on your Mac. If [Claude Code](https://claude.com/claude-code) is installed and signed in, WorkLog asks Haiku for a one-line note per day, sending only commit messages, file names and note titles, never code. No API key needed. Without Claude Code, notes come from your commit messages.
 
-Optional. If [Claude Code](https://claude.com/claude-code) is installed and signed in, WorkLog asks Haiku for a one-line note per day. It only sends commit messages, file names and note titles, never code. No API key needed.
+## Build from source
 
-## Self-test
+Open `WorkLog.xcodeproj` in Xcode and run. To check the logic:
 
 ```sh
 /Applications/WorkLog.app/Contents/MacOS/WorkLog --selftest
 ```
 
-History is saved to `history.json` in `root/WorkLog/`.
+## Licence
+
+[MIT](LICENSE)

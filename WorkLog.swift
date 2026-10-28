@@ -389,8 +389,8 @@ func collect(_ s: Settings) -> [String: Proof] {
             return p.ai == nil || p.aiStyle != noteStyle
         }.sorted(by: >)
         guard !todo.isEmpty else { return }
-        let path = await Task.detached { claudePath }.value   // first lookup runs a shell; keep it off the main thread
-        print("WorkLog: \(todo.count) notes to write with \(path ?? "no claude")")
+        // The first lookup runs a shell, so keep it off the main thread. No Claude Code: notes come from your commits.
+        guard await Task.detached(operation: { claudePath }).value != nil else { return }
         // Each call starts Claude Code, which takes a few seconds, so run four at once.
         // ponytail: fixed batches of 4; a sliding window only matters for dozens of notes
         var done = 0, failed: String?
@@ -618,7 +618,6 @@ struct Panel: View {
                 Button { showSettings.toggle() } label: { Image(systemName: "gearshape") }
                     .buttonStyle(.borderless).foregroundStyle(.secondary).help("Settings")
                     .disabled(settings.folder.isEmpty)
-                Button("Quit") { NSApp.terminate(nil) }.buttonStyle(.borderless).font(.caption).foregroundStyle(.secondary)
             }
         }
         .padding(20)
@@ -708,6 +707,7 @@ struct SettingsView: View {
             }
 
             HStack {
+                Button("Quit WorkLog") { NSApp.terminate(nil) }.buttonStyle(.borderless).foregroundStyle(.secondary)
                 Spacer()
                 Button(welcome ? "Start" : "Done", action: done)
                     .buttonStyle(.borderedProminent).keyboardShortcut(.defaultAction).disabled(empty)

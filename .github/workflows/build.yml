@@ -1,5 +1,6 @@
-# Builds and self-tests every push. A v* tag also signs, notarises and publishes a release,
-# when the signing secrets are set (see README); without them the release is unsigned.
+# Builds and self-tests every push. A v* tag also publishes a release, signed and notarised when these
+# repo secrets are set (otherwise unsigned): MACOS_CERT_P12 (base64 Developer ID Application .p12),
+# MACOS_CERT_PASSWORD, APPLE_ID, APPLE_APP_PASSWORD (app-specific password), APPLE_TEAM_ID.
 name: Build
 
 on:
