@@ -2,13 +2,36 @@ import AppKit
 import ServiceManagement
 import SwiftUI
 
-// Settings: edit these for your own setup, then build. Day rate is further down in `dayRates`.
-let root = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Desktop/Work")   // your repo clones and notes
-let historyURL = root.appendingPathComponent("WorkLog/history.json")
-let myAuthors = ["Your Name"]                        // matched against git author name <email>
-let contractStart = "2026-01-01"                     // count extra days from here
-let contractedWeekdays: Set<Int> = [2, 3, 4, 5, 6]   // Mon to Fri (Sunday = 1); any other day you work is extra
-let skipDirs: Set<String> = ["node_modules", "target", "build", "dist", ".build", "__pycache__", "WorkLog", "_to_delete"]
+/// Your setup, edited in the panel's settings and saved as you change it.
+struct Settings: Codable {
+    var folder = ""                              // repo clones and notes; nothing is scanned until it's chosen
+    var authors = ""                             // comma separated, matched against git author name <email>
+    var start = String(today().prefix(7)) + "-01"   // count extra days from here
+    var weekdays: Set<Int> = [2, 3, 4, 5, 6]     // contracted days, Sunday = 1; any other day you work is extra
+    var rates: [Rate] = []                       // gross day rate from a date; see setRate
+    struct Rate: Codable { var from: String; var amount: Decimal }
+
+    static func load() -> Settings {
+        if let data = UserDefaults.standard.data(forKey: "settings"),
+           let s = try? JSONDecoder().decode(Settings.self, from: data) { return s }
+        var s = Settings()
+        s.authors = gitIdentity()   // first run: most people never have to type this
+        return s
+    }
+    func save() { UserDefaults.standard.set(try? JSONEncoder().encode(self), forKey: "settings") }
+    var authorList: [String] { authors.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty } }
+}
+var settings = Settings.load()
+
+/// Your git name and email from git config.
+func gitIdentity() -> String {
+    ["user.name", "user.email"].map { git(["config", "--global", $0]).trimmingCharacters(in: .whitespacesAndNewlines) }
+        .filter { !$0.isEmpty }.joined(separator: ", ")
+}
+
+let historyURL = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+    .appendingPathComponent("WorkLog/history.json")
+let skipDirs: Set<String> = ["node_modules", "target", "build", "dist", ".build", "__pycache__"]
 
 let keyFmt = fmt("yyyy-MM-dd", "en_US_POSIX")
 let dayFmt = fmt("EEE d MMM", "en_GB")
@@ -20,14 +43,14 @@ func today() -> String { keyFmt.string(from: Date()) }
 func plural(_ n: Int, _ w: String) -> String { "\(n) \(w)\(n == 1 ? "" : "s")" }
 
 func isExtra(_ day: String) -> Bool {
-    guard day >= contractStart, let d = keyFmt.date(from: day) else { return false }
-    return !contractedWeekdays.contains(Calendar.current.component(.weekday, from: d))
+    guard day >= settings.start, let d = keyFmt.date(from: day) else { return false }
+    return !settings.weekdays.contains(Calendar.current.component(.weekday, from: d))
 }
 
 struct Commit: Codable, Hashable { var repo, subject, hm: String; var body: String? = nil }
 struct Proof: Codable {
     var commits: [Commit] = []
-    var files: [String: Int] = [:]   // top-level item in root ("dir/" or "file.md") -> files edited
+    var files: [String: Int] = [:]   // top-level item in your work folder ("dir/" or "file.md") -> files edited
     var paths: [String]?             // up to 25 edited files, shallowest first (notes, PR bodies, scripts), for Claude
     var note: String?                // what you typed; wins over everything
     var ai: String?                  // Claude's one-line summary; wins over the automatic brief
@@ -63,7 +86,7 @@ func brief(_ p: Proof) -> String {
     return unique.count > 2 ? "\(text) (+\(unique.count - 2) more)" : text
 }
 
-/// Extra days (outside contractedWeekdays) in a month ("2026-10"), oldest first.
+/// Extra days (outside your contracted days) in a month ("2026-10"), oldest first.
 func extraDays(_ month: String, _ history: [String: Proof]) -> [String] {
     history.keys.filter { $0.hasPrefix(month) && isExtra($0) && counted(history[$0]) }.sorted()
 }
@@ -74,16 +97,21 @@ func monthTitle(_ month: String, _ history: [String: Proof]) -> String {
     return "\(name): \(plural(days.count, "extra day")), \(money(pay(days))) gross"
 }
 
-/// Gross pay for one extra day, from the date it applies. Add a line when your rate changes; past months keep theirs.
-/// Example: [("2026-01-01", Decimal(string: "150.00")!)]. Empty shows £0.00.
-let dayRates: [(from: String, amount: Decimal)] = []
-func rate(_ day: String) -> Decimal { dayRates.last { $0.from <= day }?.amount ?? 0 }
+/// Gross pay for one extra day: the latest rate that started on or before it.
+func rate(_ day: String, _ rates: [Settings.Rate] = settings.rates) -> Decimal { rates.last { $0.from <= day }?.amount ?? 0 }
 func pay(_ days: [String]) -> Decimal { days.reduce(0) { $0 + rate($1) } }
 
-let moneyFmt: NumberFormatter = {
-    let f = NumberFormatter(); f.numberStyle = .currency; f.locale = Locale(identifier: "en_GB"); return f
-}()
-func money(_ amount: Decimal) -> String { moneyFmt.string(from: amount as NSDecimalNumber) ?? "£\(amount)" }
+/// A new rate applies from `day` on, so past months keep what they paid. The first rate covers every day.
+func setRate(_ s: inout Settings, _ amount: Decimal, from day: String) {
+    guard amount != rate(day, s.rates) else { return }
+    if s.rates.isEmpty { s.rates = [.init(from: "", amount: amount)]; return }
+    s.rates.removeAll { $0.from >= day }   // a second change on the same day replaces the first
+    s.rates.append(.init(from: day, amount: amount))
+}
+
+let moneyFmt: NumberFormatter = { let f = NumberFormatter(); f.numberStyle = .currency; return f }()   // your own currency
+let currencyCode = Locale.current.currency?.identifier ?? "GBP"
+func money(_ amount: Decimal) -> String { moneyFmt.string(from: amount as NSDecimalNumber) ?? "\(amount)" }
 
 /// Plain text for Slack: the month's extra days, one line each.
 func summary(_ month: String, _ history: [String: Proof]) -> String {
@@ -117,7 +145,7 @@ func shallowest<S: Sequence>(_ paths: S) -> [String] where S.Element == String {
 
 let claudeInstructions = """
     Write one timesheet line saying what was actually done on this day of work. \
-    One sentence, 12 to 20 words, past tense, plain UK English. \
+    One sentence, 12 to 20 words, past tense, plain English. \
     Be specific: name the feature, fix, test or document and the part of the product it touched. \
     Never mention file counts, folder names or "edited files". \
     Put the ticket ID in brackets at the end if there is one, for example: \
@@ -159,7 +187,7 @@ func prompt(_ day: String, _ p: Proof) -> String {
 /// The first heading of a Markdown or text note, if it has one.
 func title(_ path: String) -> String? {
     guard path.hasSuffix(".md") || path.hasSuffix(".txt"),
-          let h = FileHandle(forReadingAtPath: root.appendingPathComponent(path).path) else { return nil }
+          let h = FileHandle(forReadingAtPath: URL(fileURLWithPath: settings.folder).appendingPathComponent(path).path) else { return nil }
     defer { try? h.close() }
     let head = String(decoding: h.readData(ofLength: 4096), as: UTF8.self)
     let line = head.split(whereSeparator: \.isNewline).first { $0.hasPrefix("#") }
@@ -214,15 +242,18 @@ func run(_ exe: String, _ args: [String], cwd: URL? = nil, timeout: TimeInterval
     return (text, p.terminationStatus == 0)
 }
 
-/// Every day since contractStart with your commits or file edits in root.
-func collect() -> [String: Proof] {
+/// Every day since your start date with your commits or file edits in your work folder.
+func collect(_ s: Settings) -> [String: Proof] {
     var out: [String: Proof] = [:]
+    guard !s.folder.isEmpty else { return out }
     let fm = FileManager.default
+    let root = URL(fileURLWithPath: s.folder)
 
     // Commits: every repo clone at the top level; the same commit in several clones counts once.
+    // Without an author everyone's commits would count, so they're skipped until one is set.
     var seen = Set<String>()
-    for name in ((try? fm.contentsOfDirectory(atPath: root.path)) ?? []).sorted()
-    where fm.fileExists(atPath: root.appendingPathComponent(name + "/.git").path) {
+    let names = s.authorList.isEmpty ? [] : ((try? fm.contentsOfDirectory(atPath: root.path)) ?? []).sorted()
+    for name in names where fm.fileExists(atPath: root.appendingPathComponent(name + "/.git").path) {
         let dir = root.appendingPathComponent(name).path
         // Real repo name from the remote URL, so clones like MyApp-PR12 read as MyApp.
         let url = git(["-C", dir, "config", "--get-regexp", "^remote\\..*\\.url$"])
@@ -232,8 +263,8 @@ func collect() -> [String: Proof] {
         if repo.isEmpty || repo.contains(":") { repo = name }
 
         let args = ["-C", dir, "log", "--all", "--no-merges",
-                    "--since=\(contractStart) 00:00", "--date=format-local:%Y-%m-%d %H:%M",
-                    "--format=%H%x1f%ad%x1f%cd%x1f%s%x1f%b%x1e"] + myAuthors.map { "--author=" + $0 }
+                    "--since=\(s.start) 00:00", "--date=format-local:%Y-%m-%d %H:%M",
+                    "--format=%H%x1f%ad%x1f%cd%x1f%s%x1f%b%x1e"] + s.authorList.map { "--author=" + $0 }
         for record in git(args).split(separator: "\u{1e}") {
             let f = record.trimmingCharacters(in: .whitespacesAndNewlines).components(separatedBy: "\u{1f}")
             guard f.count == 5 else { continue }
@@ -243,7 +274,7 @@ func collect() -> [String: Proof] {
                 .joined(separator: " ")
             for stamp in [f[1], f[2]] {   // authored and committed (rebase, amend) both prove work that day
                 let day = String(stamp.prefix(10))
-                guard day >= contractStart, seen.insert(f[0] + day).inserted else { continue }
+                guard day >= s.start, seen.insert(f[0] + day).inserted else { continue }
                 out[day, default: Proof()].commits.append(Commit(repo: repo, subject: f[3], hm: String(stamp.suffix(5)),
                                                                  body: body.isEmpty ? nil : String(body.prefix(300))))
             }
@@ -252,7 +283,7 @@ func collect() -> [String: Proof] {
 
     // Files: modification dates, grouped by top-level folder, plus the paths themselves.
     var paths: [String: [String]] = [:]
-    let start = keyFmt.date(from: contractStart)!
+    let start = keyFmt.date(from: s.start) ?? Date()
     let depth = root.pathComponents.count
     let keys: [URLResourceKey] = [.contentModificationDateKey, .isDirectoryKey]
     if let en = fm.enumerator(at: root, includingPropertiesForKeys: keys, options: [.skipsHiddenFiles, .skipsPackageDescendants]) {
@@ -320,11 +351,23 @@ func collect() -> [String: Proof] {
         save()
     }
 
+    /// Changes a setting, saves it straight away and redraws. Callers rescan when it changes what counts.
+    func update(_ change: (inout Settings) -> Void) {
+        objectWillChange.send()
+        change(&settings)
+        settings.save()
+    }
+
+    func binding<T>(_ key: WritableKeyPath<Settings, T>) -> Binding<T> {
+        Binding(get: { settings[keyPath: key] }, set: { value in self.update { $0[keyPath: key] = value } })
+    }
+
     func scan() {
         guard !scanning else { return }
         scanning = true
+        let s = settings
         Task.detached(priority: .utility) {
-            let found = collect()
+            let found = collect(s)
             await MainActor.run {
                 var h = self.history
                 for (day, p) in found { h[day] = merged(h[day], p) }
@@ -417,7 +460,7 @@ struct MonthHeader: View {
             }
             Spacer()
             Button { shift(-1) } label: { Image(systemName: "chevron.left").frame(width: 26, height: 26) }
-                .disabled(month <= String(contractStart.prefix(7)))
+                .disabled(month <= String(settings.start.prefix(7)))
             Button { shift(1) } label: { Image(systemName: "chevron.right").frame(width: 26, height: 26) }
                 .disabled(month >= String(today().prefix(7)))
         }
@@ -501,11 +544,15 @@ struct Panel: View {
     @State private var filled = ""
     @State private var copied = false
     @State private var unlocked = false
+    @State private var showSettings = false
 
     var body: some View {
         let days = extraDays(month, store.history)
         let count = days.count
         VStack(alignment: .leading, spacing: 18) {
+          if showSettings || settings.folder.isEmpty {   // first run starts here
+            SettingsView(store: store) { showSettings = false; store.scan() }
+          } else {
             MonthHeader(month: $month, unlocked: past ? $unlocked : nil)
 
             HStack(alignment: .firstTextBaseline, spacing: 8) {
@@ -558,6 +605,7 @@ struct Panel: View {
                     .disabled(count == 0)
                 }
             }
+          }
 
             HStack(spacing: 6) {
                 if store.summarising {
@@ -567,13 +615,19 @@ struct Panel: View {
                     Text(e).font(.caption).foregroundStyle(.red).lineLimit(2)
                 }
                 Spacer()
+                Button { showSettings.toggle() } label: { Image(systemName: "gearshape") }
+                    .buttonStyle(.borderless).foregroundStyle(.secondary).help("Settings")
+                    .disabled(settings.folder.isEmpty)
                 Button("Quit") { NSApp.terminate(nil) }.buttonStyle(.borderless).font(.caption).foregroundStyle(.secondary)
             }
         }
         .padding(20)
         .frame(width: 36 * 7 + 6 * 6 + 40)
         .tint(gold)
-        .onAppear { store.scan() }
+        .onAppear {
+            store.scan()
+            if settings.folder.isEmpty { showSettings = true }   // stay on settings after the folder is picked
+        }
         // The note fills in from what you did that day: your own note, else Claude's, else the commits.
         .onChange(of: day) { d in filled = auto(d); note = filled }
         .onChange(of: day.flatMap { store.history[$0]?.ai }) { _ in
@@ -592,6 +646,103 @@ struct Panel: View {
         guard let d = day else { return }
         store.setNote(d, note)
         day = nil
+    }
+}
+
+/// Settings, and the first-run screen. Every change saves as you make it, so a closed panel never loses one.
+struct SettingsView: View {
+    @ObservedObject var store: Store
+    let done: () -> Void
+    @State private var welcome = settings.folder.isEmpty
+
+    var body: some View {
+        let empty = settings.folder.isEmpty
+        VStack(alignment: .leading, spacing: 16) {
+            VStack(alignment: .leading, spacing: 4) {
+                Text(welcome ? "Welcome to WorkLog" : "Settings").font(.title3.weight(.semibold))
+                if welcome {
+                    Text("Choose the folder with your repos and notes to start.").font(.callout).foregroundStyle(.secondary)
+                }
+            }
+
+            field("Work folder") {
+                HStack {
+                    Text(empty ? "None chosen" : (settings.folder as NSString).abbreviatingWithTildeInPath)
+                        .lineLimit(1).truncationMode(.middle)
+                        .foregroundStyle(empty ? Color.secondary : Color.primary)
+                    Spacer()
+                    Button("Choose…", action: choose)
+                }
+            }
+
+            field("Your git name or email") {
+                TextField("Name, email", text: store.binding(\.authors)).textFieldStyle(.roundedBorder)
+            }
+
+            field("Contracted days") {
+                HStack(spacing: 6) {
+                    ForEach([2, 3, 4, 5, 6, 7, 1], id: \.self) { d in
+                        let on = settings.weekdays.contains(d)
+                        Button {
+                            store.update { $0.weekdays.formSymmetricDifference([d]) }   // toggles the day
+                        } label: {
+                            Text(Calendar.current.veryShortWeekdaySymbols[d - 1])
+                                .font(.callout.weight(.medium))
+                                .frame(width: 32, height: 28)
+                                .foregroundStyle(on ? Color.white : Color.primary)
+                                .background(on ? gold : Color.primary.opacity(0.07), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                                .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+            }
+
+            HStack(alignment: .top, spacing: 12) {
+                field("Count from") {
+                    DatePicker("", selection: startDate, displayedComponents: .date).labelsHidden().datePickerStyle(.field)
+                }
+                field("Day rate") {
+                    TextField("0", value: dayRate, format: .currency(code: currencyCode)).textFieldStyle(.roundedBorder)
+                }
+            }
+
+            HStack {
+                Spacer()
+                Button(welcome ? "Start" : "Done", action: done)
+                    .buttonStyle(.borderedProminent).keyboardShortcut(.defaultAction).disabled(empty)
+            }
+        }
+    }
+
+    func field<V: View>(_ label: String, @ViewBuilder _ content: () -> V) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(label).font(.caption.weight(.medium)).foregroundStyle(.secondary)
+            content()
+        }
+    }
+
+    var startDate: Binding<Date> {
+        Binding(get: { keyFmt.date(from: settings.start) ?? Date() },
+                set: { d in store.update { $0.start = keyFmt.string(from: d) } })
+    }
+
+    /// Changing the rate starts it from today; earlier days keep what they paid.
+    var dayRate: Binding<Decimal> {
+        Binding(get: { rate(today()) }, set: { v in store.update { setRate(&$0, v, from: today()) } })
+    }
+
+    func choose() {
+        NSApp.activate(ignoringOtherApps: true)
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.prompt = "Choose"
+        panel.message = "Choose the folder that holds your repo clones and notes"
+        if panel.runModal() == .OK, let url = panel.url {
+            store.update { $0.folder = url.path }
+            store.scan()
+        }
     }
 }
 
@@ -631,8 +782,9 @@ func installAndRelaunch() {
             if others.contains(where: { $0 != NSRunningApplication.current && $0.bundleURL?.path.contains("/Applications/") == true }) { exit(0) }   // already running
             return
         }
+        settings = Settings(folder: "", authors: "", start: "2026-01-01", weekdays: [2, 3, 4, 5, 6], rates: [])   // not saved
         precondition(isExtra("2026-10-03") && isExtra("2026-10-04"), "Sat and Sun are extra")
-        precondition(!isExtra("2026-10-06") && !isExtra("2025-12-27"), "Tue, and anything before contractStart, is not")
+        precondition(!isExtra("2026-10-06") && !isExtra("2025-12-27"), "Tue, and anything before the start date, is not")
         let c = { (r: String, s: String, hm: String) in Commit(repo: r, subject: s, hm: hm) }
         let p = Proof(commits: [c("A", "x", "09:00"), c("A", "x", "10:00"), c("A", "y", "11:00"), c("B", "z", "12:00"), c("B", "w", "13:00")])
         precondition(brief(p) == "A: x; y (+2 more)", "brief caps at two")
@@ -652,8 +804,19 @@ func installAndRelaunch() {
         let m = merged(Proof(commits: [c("A", "x", "09:00")], files: ["t/": 2]), Proof(commits: [c("A", "x", "09:00"), c("B", "z", "12:00")], files: ["t/": 1, "u/": 4]))
         precondition(m.commits.count == 2 && m.files == ["t/": 2, "u/": 4], "merge keeps the most seen")
         let h = ["2026-10-01": p, "2026-10-03": Proof(files: ["t/": 1])]
-        precondition(summary("2026-10", h) == "October 2026: 1 extra day, £0.00 gross\n\nSat 3 Oct — Worked on t", "month summary lists extra days only")
-        let all = collect().mapValues { merged(nil, $0) }
+        precondition(summary("2026-10", h) == "October 2026: 1 extra day, \(money(0)) gross\n\nSat 3 Oct — Worked on t", "month summary lists extra days only")
+        var s = settings
+        setRate(&s, 100, from: "2026-03-01")   // the first rate covers every day
+        setRate(&s, 150, from: "2026-10-05")   // a raise: earlier days keep 100
+        setRate(&s, 150, from: "2026-10-06")   // same rate again: nothing new
+        precondition(s.rates.count == 2, "a rate is only added when it changes")
+        settings = s
+        precondition(pay(["2025-06-07", "2026-10-04", "2026-10-10"]) == 350, "each day pays the rate it had")
+        setRate(&s, 160, from: "2026-10-05")
+        precondition(s.rates.count == 2 && rate("2026-10-10", s.rates) == 160, "a second change the same day replaces the first")
+        precondition(collect(Settings(folder: "")).isEmpty, "nothing is scanned until a folder is chosen")
+        settings = Settings.load()   // your real setup, for the printout below
+        let all = collect(settings).mapValues { merged(nil, $0) }
         for month in Set(all.keys.map { String($0.prefix(7)) }).sorted() { print(summary(month, all), "\n") }
         print("selftest ok")
         exit(0)

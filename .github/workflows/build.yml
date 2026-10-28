@@ -1,0 +1,77 @@
+# Builds and self-tests every push. A v* tag also signs, notarises and publishes a release,
+# when the signing secrets are set (see README); without them the release is unsigned.
+name: Build
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+
+jobs:
+  build:
+    runs-on: macos-15
+    timeout-minutes: 30
+    permissions:
+      contents: write
+    env:
+      APP: build/Build/Products/Release/WorkLog.app
+      SIGN: ${{ startsWith(github.ref, 'refs/tags/v') && secrets.MACOS_CERT_P12 != '' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Import signing certificate
+        if: env.SIGN == 'true'
+        env:
+          P12: ${{ secrets.MACOS_CERT_P12 }}
+          P12_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }}
+        run: |
+          KC="$RUNNER_TEMP/signing.keychain-db"
+          echo "$P12" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security create-keychain -p ci "$KC"
+          security set-keychain-settings -lut 3600 "$KC"
+          security unlock-keychain -p ci "$KC"
+          security import "$RUNNER_TEMP/cert.p12" -k "$KC" -P "$P12_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k ci "$KC"
+          security list-keychains -d user -s "$KC" $(security list-keychains -d user | tr -d '"')
+          rm "$RUNNER_TEMP/cert.p12"
+
+      - name: Build
+        env:
+          TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          if [ "$SIGN" = true ]; then
+            SIGNING=(CODE_SIGN_IDENTITY="Developer ID Application" DEVELOPMENT_TEAM="$TEAM_ID" OTHER_CODE_SIGN_FLAGS=--timestamp)
+          else
+            SIGNING=(CODE_SIGN_IDENTITY=-)
+          fi
+          xcodebuild -quiet -project WorkLog.xcodeproj -scheme WorkLog -configuration Release -derivedDataPath build "${SIGNING[@]}" build
+
+      - name: Self-test
+        timeout-minutes: 3
+        run: '"$APP/Contents/MacOS/WorkLog" --selftest'
+
+      - name: Notarise
+        if: env.SIGN == 'true'
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+          TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          ditto -c -k --keepParent "$APP" notarise.zip
+          xcrun notarytool submit notarise.zip --apple-id "$APPLE_ID" --password "$APPLE_APP_PASSWORD" --team-id "$TEAM_ID" --wait
+          xcrun stapler staple "$APP"
+
+      - name: Zip
+        run: ditto -c -k --keepParent "$APP" WorkLog.zip
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: WorkLog
+          path: WorkLog.zip
+
+      - name: Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" WorkLog.zip --title "WorkLog ${GITHUB_REF_NAME#v}" --generate-notes
