@@ -12,18 +12,18 @@
 
 <p align="center">
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="docs/preview-dark.png">
-    <img src="docs/preview-light.png" width="340" alt="WorkLog's menu bar panel showing four extra days in October">
+    <source media="(prefers-color-scheme: dark)" srcset="docs/hero-dark.png">
+    <img src="docs/hero-light.png" width="840" alt="Two WorkLog panels: the month overview with a Copy for Slack button, and a selected Saturday with its note">
   </picture>
 </p>
 
 ## What it does
 
-- Scans your repos and notes folder every 10 minutes for commits and edited files
-- Marks each extra day on a month calendar and totals the gross pay
-- Writes a one-line note for each day with Claude Code, or you type your own
-- Copies the month as plain text, ready to paste into Slack
-- Locks past months so they can't change by accident
+- **Finds your work.** Scans your repos and notes folder every 10 minutes for commits and edited files.
+- **Counts extra days.** Marks them on a month calendar and totals the gross pay.
+- **Writes the notes.** One line per day from Claude Code, or type your own.
+- **Ready for Slack.** Copies the month as plain text in one click.
+- **Keeps history safe.** Past months lock, and a day you remove stays removed.
 
 ## Setup
 
