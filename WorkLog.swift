@@ -465,6 +465,56 @@ struct Pressable: ButtonStyle {
     }
 }
 
+/// A rounded group of settings rows: soft tint and hairlines, no border, like System Settings.
+struct RowGroup<Content: View>: View {
+    @ViewBuilder let content: Content
+
+    var body: some View {
+        VStack(spacing: 0) { content }
+            .background(Color.primary.opacity(0.05))
+            .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+    }
+}
+
+/// One settings row: a gold icon tile, the label, and its value or control on the right.
+struct Row<Trailing: View>: View {
+    let icon: String
+    let label: String
+    @ViewBuilder let trailing: Trailing
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Image(systemName: icon)
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(.white)
+                .frame(width: 22, height: 22)
+                .background(gold.gradient, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+            Text(label)
+            Spacer(minLength: 12)
+            trailing
+        }
+        .padding(.horizontal, 10)
+        .frame(minHeight: 40)
+        .contentShape(Rectangle())
+    }
+}
+
+/// The faint line between rows, starting after the icon like System Settings.
+struct Hairline: View {
+    var body: some View {
+        Color.primary.opacity(0.08).frame(height: 0.5).padding(.leading, 42)
+    }
+}
+
+/// Rows tint a touch while pressed, the way list rows do.
+struct RowPress: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .background(Color.primary.opacity(configuration.isPressed ? 0.06 : 0))
+            .animation(.easeOut(duration: 0.12), value: configuration.isPressed)
+    }
+}
+
 /// A small icon button that lights up under the pointer.
 struct IconButton: View {
     let symbol: String
@@ -736,7 +786,7 @@ struct SettingsView: View {
 
     var body: some View {
         let empty = settings.folder.isEmpty
-        VStack(alignment: .leading, spacing: 18) {
+        VStack(alignment: .leading, spacing: 16) {
             HStack(alignment: .center) {
                 VStack(alignment: .leading, spacing: 3) {
                     Text(welcome ? "Welcome to WorkLog" : "Settings").font(.title3.weight(.semibold))
@@ -749,69 +799,51 @@ struct SettingsView: View {
                     .buttonStyle(.borderedProminent).keyboardShortcut(.defaultAction).disabled(empty)
             }
 
-            section("Work folder") {
+            RowGroup {
                 Button(action: choose) {
-                    HStack(spacing: 8) {
-                        Image(systemName: "folder.fill").foregroundStyle(gold)
-                        Text(empty ? "Choose a folder" : (settings.folder as NSString).abbreviatingWithTildeInPath)
-                            .lineLimit(1).truncationMode(.middle)
-                            .foregroundStyle(empty ? Color.secondary : Color.primary)
-                        Spacer(minLength: 8)
-                        Text(empty ? "Choose" : "Change").fontWeight(.medium).foregroundStyle(gold)
-                    }
-                    .well()
-                }
-                .buttonStyle(Pressable())
-            }
-
-            section("Your git name or email") {
-                TextField("Name, email", text: store.binding(\.authors)).textFieldStyle(.plain).well()
-            }
-
-            section("Working days") {
-                HStack(spacing: 6) {
-                    ForEach([2, 3, 4, 5, 6, 7, 1], id: \.self) { d in
-                        let on = settings.weekdays.contains(d)
-                        Button {
-                            withAnimation(panelSpring) { store.update { $0.weekdays.formSymmetricDifference([d]) } }   // toggles the day
-                        } label: {
-                            Text(Calendar.current.veryShortWeekdaySymbols[d - 1])
-                                .font(.callout.weight(.semibold))
-                                .frame(maxWidth: .infinity, minHeight: 30)
-                                .foregroundStyle(on ? Color.white : Color.secondary)
-                                .background(on ? gold : Color.primary.opacity(0.055), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-                        }
-                        .buttonStyle(Pressable())
-                        .help(Calendar.current.weekdaySymbols[d - 1])
+                    Row(icon: "folder.fill", label: "Work folder") {
+                        Text(empty ? "Choose…" : URL(fileURLWithPath: settings.folder).lastPathComponent)
+                            .lineLimit(1)
+                            .foregroundStyle(empty ? gold : Color.secondary)
+                        Image(systemName: "chevron.right").font(.caption.weight(.semibold)).foregroundStyle(.tertiary)
                     }
                 }
+                .buttonStyle(RowPress())
+                .help(settings.folder)
+                Hairline()
+                Row(icon: "person.fill", label: "Git author") {
+                    TextField("Name or email", text: store.binding(\.authors))
+                        .textFieldStyle(.plain).multilineTextAlignment(.trailing).foregroundStyle(.secondary)
+                }
+                .help("Only these authors' commits count. Separate several with commas.")
             }
 
-            HStack(alignment: .top, spacing: 10) {
-                section("Count from") {
-                    Button { withAnimation(panelSpring) { pickingDate.toggle() } } label: {
-                        HStack {
-                            Text(startText).foregroundStyle(Color.primary)
-                            Spacer(minLength: 4)
-                            Image(systemName: "chevron.down")
-                                .font(.caption.weight(.semibold)).foregroundStyle(.secondary)
-                                .rotationEffect(.degrees(pickingDate ? 180 : 0))
-                        }
-                        .well()
+            RowGroup {
+                Row(icon: "calendar", label: "Working days") { EmptyView() }
+                HStack(spacing: 5) { pills }
+                    .padding(.horizontal, 10).padding(.bottom, 10)
+                Hairline()
+                Button { withAnimation(panelSpring) { pickingDate.toggle() } } label: {
+                    Row(icon: "flag.fill", label: "Count from") {
+                        Text(startText).foregroundStyle(.secondary)
+                        Image(systemName: "chevron.down").font(.caption.weight(.semibold)).foregroundStyle(.tertiary)
+                            .rotationEffect(.degrees(pickingDate ? 180 : 0))
                     }
-                    .buttonStyle(Pressable())
                 }
-                section("Day rate") {
+                .buttonStyle(RowPress())
+                if pickingDate {
+                    DatePicker("", selection: startDate, in: ...Date(), displayedComponents: .date)
+                        .datePickerStyle(.graphical).labelsHidden()
+                        .frame(maxWidth: .infinity)
+                        .padding(.bottom, 8)
+                        .transition(.opacity)
+                }
+                Hairline()
+                Row(icon: "banknote.fill", label: "Day rate") {
                     TextField("0", value: dayRate, format: .currency(code: currencyCode))
-                        .textFieldStyle(.plain).multilineTextAlignment(.trailing).font(.body.monospacedDigit()).well()
+                        .textFieldStyle(.plain).multilineTextAlignment(.trailing)
+                        .font(.body.monospacedDigit()).foregroundStyle(.secondary)
                 }
-            }
-
-            if pickingDate {
-                DatePicker("", selection: startDate, in: ...Date(), displayedComponents: .date)
-                    .datePickerStyle(.graphical).labelsHidden()
-                    .frame(maxWidth: .infinity)
-                    .transition(.opacity.combined(with: .offset(y: -8)))
             }
 
             HStack {
@@ -824,10 +856,21 @@ struct SettingsView: View {
         }
     }
 
-    func section<V: View>(_ label: String, @ViewBuilder _ content: () -> V) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text(label).font(.caption.weight(.medium)).foregroundStyle(.secondary)
-            content()
+    /// Your contracted days; every other day you work counts as extra.
+    var pills: some View {
+        ForEach([2, 3, 4, 5, 6, 7, 1], id: \.self) { d in
+            let on = settings.weekdays.contains(d)
+            Button {
+                withAnimation(panelSpring) { store.update { $0.weekdays.formSymmetricDifference([d]) } }   // toggles the day
+            } label: {
+                Text(Calendar.current.veryShortWeekdaySymbols[d - 1])
+                    .font(.callout.weight(.semibold))
+                    .frame(maxWidth: .infinity, minHeight: 28)
+                    .foregroundStyle(on ? Color.white : Color.secondary)
+                    .background(on ? gold : Color.primary.opacity(0.07), in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+            }
+            .buttonStyle(Pressable())
+            .help(Calendar.current.weekdaySymbols[d - 1])
         }
     }
 
