@@ -465,6 +465,25 @@ struct Pressable: ButtonStyle {
     }
 }
 
+/// Fades a view in once it's on screen. Only opacity and a small offset move, never size:
+/// the menu bar window lays out wrong if its height changes mid-animation.
+struct FadeIn: ViewModifier {
+    var x: CGFloat = 0
+    var y: CGFloat = 0
+    @State private var shown = false
+
+    func body(content: Content) -> some View {
+        content
+            .opacity(shown ? 1 : 0)
+            .offset(x: shown ? 0 : x, y: shown ? 0 : y)
+            .onAppear { withAnimation(.easeOut(duration: 0.22)) { shown = true } }
+    }
+}
+
+extension View {
+    func fadeIn(x: CGFloat = 0, y: CGFloat = 0) -> some View { modifier(FadeIn(x: x, y: y)) }
+}
+
 /// A rounded group of settings rows: soft tint and hairlines, no border, like System Settings.
 struct RowGroup<Content: View>: View {
     @ViewBuilder let content: Content
@@ -553,7 +572,7 @@ struct MonthHeader: View {
                 IconButton(symbol: unlocked.wrappedValue ? "lock.open.fill" : "lock.fill",
                            help: unlocked.wrappedValue ? "Lock this month" : "Unlock to change this month",
                            tint: unlocked.wrappedValue ? gold : nil) {
-                    withAnimation(panelSpring) { unlocked.wrappedValue.toggle() }
+                    unlocked.wrappedValue.toggle()
                 }
             }
             Spacer()
@@ -567,7 +586,7 @@ struct MonthHeader: View {
     func shift(_ n: Int) {
         guard let first = keyFmt.date(from: month + "-01"),
               let next = Calendar(identifier: .gregorian).date(byAdding: .month, value: n, to: first) else { return }
-        withAnimation(panelSpring) { month = String(keyFmt.string(from: next).prefix(7)) }
+        month = String(keyFmt.string(from: next).prefix(7))
     }
 }
 
@@ -620,7 +639,7 @@ struct MonthGrid: View {
                 }
         }
         .buttonStyle(Pressable())
-        .disabled(!open || locked)
+        .disabled(!open || (locked && !worked))
         .onHover { h in withAnimation(.easeOut(duration: 0.12)) { hovered = h ? d : (hovered == d ? nil : hovered) } }
         .help(history[d].map(brief) ?? "")
     }
@@ -647,15 +666,15 @@ struct Panel: View {
     @State private var showSettings = false
 
     var body: some View {
-        ZStack(alignment: .top) {   // the two pages cross over instead of stacking up mid-slide
+        Group {
             if showSettings || settings.folder.isEmpty {   // first run starts here
                 SettingsView(store: store) {
-                    withAnimation(panelSpring) { showSettings = false }
+                    showSettings = false
                     store.scan()
                 }
-                .transition(.opacity.combined(with: .offset(x: 24)))
+                .fadeIn(x: 16)
             } else {
-                calendar.transition(.opacity.combined(with: .offset(x: -24)))
+                calendar.fadeIn(x: -16)
             }
         }
         .padding(20)
@@ -671,7 +690,6 @@ struct Panel: View {
             if note == filled { filled = auto(day); note = filled }   // Claude's note arrived; keep anything you typed
         }
         .onChange(of: month) { _ in day = nil; unlocked = false }   // past months lock again when you leave them
-        .onChange(of: unlocked) { if !$0 { day = nil } }
     }
 
     var calendar: some View {
@@ -683,29 +701,27 @@ struct Panel: View {
             HStack(alignment: .firstTextBaseline, spacing: 8) {
                 Text("\(count)").font(.system(size: 44, weight: .semibold, design: .rounded)).foregroundStyle(gold)
                     .contentTransition(.numericText())
+                    .animation(panelSpring, value: count)
                 Text(count == 1 ? "extra day" : "extra days").font(.title3).foregroundStyle(.secondary)
                 Spacer()
                 VStack(alignment: .trailing, spacing: 1) {
                     Text(money(pay(days))).font(.title3.weight(.semibold).monospacedDigit())
                         .contentTransition(.numericText())
+                        .animation(panelSpring, value: pay(days))
                     Text("gross").font(.caption).foregroundStyle(.secondary)
                 }
             }
 
-            ZStack {   // months fade into each other
-                MonthGrid(month: month, size: 36, history: store.history, selected: day, locked: past && !unlocked) { d in
-                    withAnimation(panelSpring) { day = day == d ? nil : d }
-                }
-                .id(month)
-                .transition(.opacity)
+            MonthGrid(month: month, size: 36, history: store.history, selected: day, locked: past && !unlocked) { d in
+                day = day == d ? nil : d
             }
+            .id(month)   // a new month fades in fresh
+            .fadeIn()
 
-            ZStack(alignment: .top) {
-                if let d = day {
-                    editor(d).transition(.opacity.combined(with: .offset(y: -8)))
-                } else {
-                    copyButton(disabled: count == 0).transition(.opacity)
-                }
+            if let d = day {
+                editor(d, readOnly: past && !unlocked).id(d).fadeIn(y: -6)
+            } else {
+                copyButton(disabled: count == 0).fadeIn()
             }
 
             HStack(spacing: 6) {
@@ -717,36 +733,52 @@ struct Panel: View {
                     Text(e).font(.caption).foregroundStyle(.red).lineLimit(2)
                 }
                 Spacer()
-                IconButton(symbol: "gearshape", help: "Settings") { withAnimation(panelSpring) { showSettings = true } }
+                IconButton(symbol: "gearshape", help: "Settings") { showSettings = true }
             }
             .animation(.easeInOut(duration: 0.2), value: store.summarising)
         }
     }
 
-    func editor(_ d: String) -> some View {
+    /// The day's note. In a locked month you can read it but not change it.
+    func editor(_ d: String, readOnly: Bool) -> some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(alignment: .firstTextBaseline) {
                 Text(keyFmt.date(from: d).map { fmt("EEEE d MMMM", "en_GB").string(from: $0) } ?? d).font(.headline)
                 Spacer()
                 Text(money(rate(d))).font(.callout.monospacedDigit()).foregroundStyle(.secondary)
             }
-            TextField("What you did", text: $note, axis: .vertical)
-                .lineLimit(4, reservesSpace: true)
-                .font(.callout)
-                .textFieldStyle(.plain)
-                .padding(.vertical, 10)
-                .well()
-                .onSubmit(save)
-            HStack(spacing: 8) {
-                if counted(store.history[d]) {
-                    Button("Remove", role: .destructive) { store.remove(d); close() }.tint(.red)
+            if readOnly {
+                Text(note.isEmpty ? "No note" : note)
+                    .font(.callout)
+                    .foregroundStyle(note.isEmpty ? Color.secondary : Color.primary)
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.vertical, 10)
+                    .well()
+                HStack {
+                    Spacer()
+                    Button("Close", action: close).keyboardShortcut(.cancelAction)
                 }
-                Spacer()
-                Button("Cancel", action: close)
-                Button(counted(store.history[d]) ? "Save" : "Add day", action: save)
-                    .buttonStyle(.borderedProminent).keyboardShortcut(.defaultAction)
+            } else {
+                TextField("What you did", text: $note, axis: .vertical)
+                    .lineLimit(4, reservesSpace: true)
+                    .font(.callout)
+                    .textFieldStyle(.plain)
+                    .padding(.vertical, 10)
+                    .well()
+                    .onSubmit(save)
+                HStack(spacing: 8) {
+                    if counted(store.history[d]) {
+                        Button("Remove", role: .destructive) { store.remove(d); close() }.tint(.red)
+                    }
+                    Spacer()
+                    Button("Cancel", action: close)
+                    Button(counted(store.history[d]) ? "Save" : "Add day", action: save)
+                        .buttonStyle(.borderedProminent).keyboardShortcut(.defaultAction)
+                }
             }
         }
+        .fixedSize(horizontal: false, vertical: true)   // never squashed, so the note can't overlap the heading
     }
 
     func copyButton(disabled: Bool) -> some View {
@@ -768,7 +800,7 @@ struct Panel: View {
 
     func auto(_ d: String?) -> String { d.flatMap { store.history[$0] }.map(brief) ?? "" }
 
-    func close() { withAnimation(panelSpring) { day = nil } }
+    func close() { day = nil }
 
     func save() {
         guard let d = day else { return }
@@ -823,11 +855,12 @@ struct SettingsView: View {
                 HStack(spacing: 5) { pills }
                     .padding(.horizontal, 10).padding(.bottom, 10)
                 Hairline()
-                Button { withAnimation(panelSpring) { pickingDate.toggle() } } label: {
+                Button { pickingDate.toggle() } label: {
                     Row(icon: "flag.fill", label: "Count from") {
                         Text(startText).foregroundStyle(.secondary)
                         Image(systemName: "chevron.down").font(.caption.weight(.semibold)).foregroundStyle(.tertiary)
                             .rotationEffect(.degrees(pickingDate ? 180 : 0))
+                            .animation(panelSpring, value: pickingDate)
                     }
                 }
                 .buttonStyle(RowPress())
@@ -836,7 +869,7 @@ struct SettingsView: View {
                         .datePickerStyle(.graphical).labelsHidden()
                         .frame(maxWidth: .infinity)
                         .padding(.bottom, 8)
-                        .transition(.opacity)
+                        .fadeIn(y: -6)
                 }
                 Hairline()
                 Row(icon: "banknote.fill", label: "Day rate") {
@@ -896,7 +929,7 @@ struct SettingsView: View {
         panel.prompt = "Choose"
         panel.message = "Choose the folder that holds your repo clones and notes"
         if panel.runModal() == .OK, let url = panel.url {
-            withAnimation(panelSpring) { store.update { $0.folder = url.path } }
+            store.update { $0.folder = url.path }
             store.scan()
         }
     }
