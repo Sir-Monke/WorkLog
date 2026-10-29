@@ -847,7 +847,7 @@ struct SettingsView: View {
             }
 
             HStack {
-                Button { NSApp.terminate(nil) } label: { Label("Quit WorkLog", systemImage: "power") }
+                Button("Quit WorkLog") { NSApp.terminate(nil) }
                     .buttonStyle(Pressable()).foregroundStyle(.secondary)
                 Spacer()
                 Text("Version \(appVersion)").foregroundStyle(.tertiary)
