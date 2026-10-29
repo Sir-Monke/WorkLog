@@ -518,30 +518,119 @@ struct RowGroup<Content: View>: View {
     }
 }
 
-/// One settings row: a gold icon tile, the label, and its value or control on the right.
+/// The small gold tile that starts each settings row.
+struct IconTile: View {
+    let symbol: String
+
+    var body: some View {
+        Image(systemName: symbol)
+            .font(.system(size: 11, weight: .semibold))
+            .foregroundStyle(.white)
+            .frame(width: 22, height: 22)
+            .background(gold.gradient, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+    }
+}
+
+/// One settings row: icon, label, and its value or control on the right.
 struct Row<Trailing: View>: View {
     let icon: String
     let label: String
-    var detail: String? = nil
     @ViewBuilder let trailing: Trailing
 
     var body: some View {
         HStack(spacing: 10) {
-            Image(systemName: icon)
-                .font(.system(size: 11, weight: .semibold))
-                .foregroundStyle(.white)
-                .frame(width: 22, height: 22)
-                .background(gold.gradient, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
-            VStack(alignment: .leading, spacing: 1) {
-                Text(label)
-                if let detail { Text(detail).font(.caption).foregroundStyle(.secondary) }
-            }
+            IconTile(symbol: icon)
+            Text(label)
             Spacer(minLength: 12)
             trailing
         }
         .padding(.horizontal, 10)
-        .frame(minHeight: 40)
+        .frame(minHeight: 34)
         .contentShape(Rectangle())
+    }
+}
+
+/// A row whose value is a set of tags that wrap onto new lines.
+struct TokenRow<Content: View>: View {
+    let icon: String
+    let label: String
+    var help = ""
+    @ViewBuilder let content: Content
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 10) {
+            IconTile(symbol: icon).frame(height: 24)
+            Text(label).frame(width: 60, height: 24, alignment: .leading).help(help)
+            Flow { content }.frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .padding(.horizontal, 10).padding(.vertical, 5)
+    }
+}
+
+/// A removable value as a small tinted capsule.
+struct Token: View {
+    let text: String
+    var help = ""
+    var removable = true
+    let remove: () -> Void
+
+    var body: some View {
+        HStack(spacing: 5) {
+            Text(text).lineLimit(1).truncationMode(.middle)
+            if removable {
+                Button(action: remove) { Image(systemName: "xmark").font(.system(size: 8, weight: .bold)) }
+                    .buttonStyle(Pressable()).foregroundStyle(.secondary).help("Remove")
+            }
+        }
+        .font(.callout)
+        .padding(.horizontal, 9)
+        .frame(height: 24)
+        .background(Color.primary.opacity(0.08), in: Capsule())
+        .help(help)
+    }
+}
+
+/// The round + at the end of a set of tags.
+struct AddButton: View {
+    var help = ""
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: "plus").font(.system(size: 10, weight: .bold))
+                .frame(width: 24, height: 24)
+                .background(gold.opacity(0.18), in: Circle())
+        }
+        .buttonStyle(Pressable()).foregroundStyle(gold).help(help)
+    }
+}
+
+/// Lays views out left to right, wrapping onto new lines when the row is full.
+struct Flow: Layout {
+    var spacing: CGFloat = 5
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        let width = proposal.width ?? .infinity
+        var x: CGFloat = 0, y: CGFloat = 0, line: CGFloat = 0, widest: CGFloat = 0
+        for v in subviews {
+            let size = v.sizeThatFits(ProposedViewSize(width: width, height: nil))   // long tags truncate instead of overflowing
+            if x > 0 && x + size.width > width { x = 0; y += line + spacing; line = 0 }
+            x += size.width + spacing
+            line = max(line, size.height)
+            widest = max(widest, x - spacing)
+        }
+        return CGSize(width: min(widest, width), height: y + line)
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        var x = bounds.minX, y = bounds.minY, line: CGFloat = 0
+        for v in subviews {
+            let size = v.sizeThatFits(ProposedViewSize(width: bounds.width, height: nil))
+            if x > bounds.minX && x + size.width > bounds.maxX { x = bounds.minX; y += line + spacing; line = 0 }
+            v.place(at: CGPoint(x: x, y: y), proposal: ProposedViewSize(size))
+            x += size.width + spacing
+            line = max(line, size.height)
+        }
     }
 }
 
@@ -549,33 +638,6 @@ struct Row<Trailing: View>: View {
 struct Hairline: View {
     var body: some View {
         Color.primary.opacity(0.08).frame(height: 0.5).padding(.leading, 42)
-    }
-}
-
-/// One entry in a settings list. Its remove button only shows under the pointer, so the list stays quiet.
-struct ListItem: View {
-    let text: String
-    var help = ""
-    var removable = true
-    let remove: () -> Void
-    @State private var over = false
-
-    var body: some View {
-        HStack(spacing: 8) {
-            Text(text).lineLimit(1).truncationMode(.middle)
-            Spacer(minLength: 8)
-            Button(action: remove) { Image(systemName: "minus.circle.fill") }
-                .buttonStyle(.plain)
-                .foregroundStyle(.secondary)
-                .opacity(removable && over ? 1 : 0)
-                .disabled(!removable)
-                .help("Remove")
-        }
-        .padding(.leading, 42).padding(.trailing, 10)
-        .frame(minHeight: 30)
-        .contentShape(Rectangle())
-        .onHover { h in withAnimation(.easeOut(duration: 0.12)) { over = h } }
-        .help(help)
     }
 }
 
@@ -699,13 +761,71 @@ struct MonthGrid: View {
         .help(history[d].map(brief) ?? "")
     }
 
-    /// Leading blanks so the 1st sits under its weekday (Monday first), then each day of the month.
-    var cells: [String?] {
-        let cal = Calendar(identifier: .gregorian)
-        guard let first = keyFmt.date(from: month + "-01"), let count = cal.range(of: .day, in: .month, for: first)?.count else { return [] }
-        let lead = (cal.component(.weekday, from: first) + 5) % 7
-        let days: [String?] = (0..<count).map { keyFmt.string(from: cal.date(byAdding: .day, value: $0, to: first)!) }
-        return Array(repeating: nil, count: lead) + days
+    var cells: [String?] { monthCells(month) }
+}
+
+/// Leading blanks so the 1st sits under its weekday (Monday first), then each day of the month.
+func monthCells(_ month: String) -> [String?] {
+    let cal = Calendar(identifier: .gregorian)
+    guard let first = keyFmt.date(from: month + "-01"), let count = cal.range(of: .day, in: .month, for: first)?.count else { return [] }
+    let lead = (cal.component(.weekday, from: first) + 5) % 7
+    let days: [String?] = (0..<count).map { keyFmt.string(from: cal.date(byAdding: .day, value: $0, to: first)!) }
+    return Array(repeating: nil, count: lead) + days
+}
+
+/// A small calendar for the start date, in the same style as the main one. Picking a day closes it.
+struct DatePick: View {
+    @Binding var day: String
+    let picked: () -> Void
+    @State private var month: String
+
+    init(day: Binding<String>, picked: @escaping () -> Void) {
+        _day = day
+        self.picked = picked
+        _month = State(initialValue: String(day.wrappedValue.prefix(7)))
+    }
+
+    var body: some View {
+        let days = monthCells(month)
+        VStack(spacing: 4) {
+            HStack(spacing: 2) {
+                Text(keyFmt.date(from: month + "-01").map { monthFmt.string(from: $0) } ?? month).font(.callout.weight(.semibold))
+                Spacer()
+                IconButton(symbol: "chevron.left", help: "Previous month") { shift(-1) }
+                IconButton(symbol: "chevron.right", help: "Next month") { shift(1) }
+                    .disabled(month >= String(today().prefix(7)))
+            }
+            HStack(spacing: 4) {
+                ForEach(["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"], id: \.self) { w in
+                    Text(w.prefix(1)).font(.caption2.weight(.medium)).foregroundStyle(.secondary).frame(width: 28)
+                }
+            }
+            LazyVGrid(columns: Array(repeating: GridItem(.fixed(28), spacing: 4), count: 7), spacing: 4) {
+                ForEach(days.indices, id: \.self) { i in
+                    if let d = days[i] { cell(d) } else { Color.clear.frame(height: 28) }
+                }
+            }
+        }
+    }
+
+    func cell(_ d: String) -> some View {
+        let on = d == day
+        let future = d > today()
+        return Button { day = d; picked() } label: {
+            Text("\(Int(d.suffix(2)) ?? 0)")
+                .font(.system(size: 11, weight: on ? .semibold : .regular))
+                .frame(width: 28, height: 28)
+                .foregroundStyle(on ? Color.white : future ? Color.secondary.opacity(0.35) : Color.primary)
+                .background(on ? gold : Color.clear, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+        }
+        .buttonStyle(Pressable())
+        .disabled(future)
+    }
+
+    func shift(_ n: Int) {
+        guard let first = keyFmt.date(from: month + "-01"),
+              let next = Calendar(identifier: .gregorian).date(byAdding: .month, value: n, to: first) else { return }
+        month = String(keyFmt.string(from: next).prefix(7))
     }
 }
 
@@ -870,12 +990,14 @@ struct SettingsView: View {
     let done: () -> Void
     @State private var welcome = settings.folders.isEmpty
     @State private var pickingDate = false
+    @State private var addingAuthor = false
     @State private var newAuthor = ""
+    @FocusState private var authorFocus: Bool
 
     var body: some View {
         let empty = settings.folders.isEmpty
-        VStack(alignment: .leading, spacing: 16) {
-            HStack(alignment: .center) {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(alignment: .firstTextBaseline) {
                 VStack(alignment: .leading, spacing: 3) {
                     Text(welcome ? "Welcome to WorkLog" : "Settings").font(.title3.weight(.semibold))
                     if welcome {
@@ -883,40 +1005,43 @@ struct SettingsView: View {
                     }
                 }
                 Spacer()
-                Button(welcome ? "Start" : "Done") { addAuthor(); done() }   // a name typed but not added still counts
-                    .buttonStyle(.borderedProminent).disabled(empty)
+                Text("Version \(appVersion)").font(.caption).foregroundStyle(.tertiary)
             }
 
             RowGroup {
-                Row(icon: "folder.fill", label: "Work folders", detail: "Repos and notes to check") { EmptyView() }
-                ForEach(settings.folders, id: \.self) { f in
-                    ListItem(text: URL(fileURLWithPath: f).lastPathComponent, help: (f as NSString).abbreviatingWithTildeInPath,
-                             removable: settings.folders.count > 1) {
-                        store.update { s in s.folders.removeAll { $0 == f } }
+                TokenRow(icon: "folder.fill", label: "Folders", help: "Repos and notes to check") {
+                    ForEach(settings.folders, id: \.self) { f in
+                        Token(text: URL(fileURLWithPath: f).lastPathComponent, help: (f as NSString).abbreviatingWithTildeInPath,
+                              removable: settings.folders.count > 1) {
+                            store.update { s in s.folders.removeAll { $0 == f } }
+                        }
+                    }
+                    AddButton(help: "Add folders", action: addFolders)
+                }
+                Hairline()
+                TokenRow(icon: "person.fill", label: "Authors", help: "Your git names or emails; only their commits count") {
+                    ForEach(settings.authors, id: \.self) { a in
+                        Token(text: a) { store.update { s in s.authors.removeAll { $0 == a } } }
+                    }
+                    if addingAuthor {
+                        TextField("Name or email", text: $newAuthor)
+                            .textFieldStyle(.plain).font(.callout)
+                            .focused($authorFocus)
+                            .frame(width: 110, height: 24)
+                            .padding(.horizontal, 9)
+                            .background(Color.primary.opacity(0.08), in: Capsule())
+                            .onSubmit { addAuthor(); addingAuthor = false }
+                            .onAppear { authorFocus = true }
+                    } else {
+                        AddButton(help: "Add a git name or email") { addingAuthor = true }
                     }
                 }
-                Button(action: addFolders) {
-                    Text("Add folder…").fontWeight(.medium).foregroundStyle(gold)
-                        .padding(.leading, 42)
-                        .frame(maxWidth: .infinity, minHeight: 32, alignment: .leading)
-                }
-                .buttonStyle(RowPress())
-                Hairline()
-                Row(icon: "person.fill", label: "Git authors", detail: "Only their commits count") { EmptyView() }
-                ForEach(settings.authors, id: \.self) { a in
-                    ListItem(text: a) { store.update { s in s.authors.removeAll { $0 == a } } }
-                }
-                TextField("Add a name or email", text: $newAuthor)
-                    .textFieldStyle(.plain)
-                    .padding(.leading, 42).padding(.trailing, 10)
-                    .frame(minHeight: 32)
-                    .onSubmit(addAuthor)
             }
 
             RowGroup {
                 Row(icon: "calendar", label: "Working days") { EmptyView() }
-                HStack(spacing: 5) { pills }
-                    .padding(.horizontal, 10).padding(.bottom, 10)
+                HStack(spacing: 4) { pills }
+                    .padding(.horizontal, 10).padding(.bottom, 8)
                 Hairline()
                 Button { pickingDate.toggle() } label: {
                     Row(icon: "flag.fill", label: "Count from") {
@@ -928,27 +1053,31 @@ struct SettingsView: View {
                 }
                 .buttonStyle(RowPress())
                 if pickingDate {
-                    DatePicker("", selection: startDate, in: ...Date(), displayedComponents: .date)
-                        .datePickerStyle(.graphical).labelsHidden()
-                        .frame(maxWidth: .infinity)
-                        .padding(.bottom, 8)
+                    DatePick(day: store.binding(\.start)) { pickingDate = false }
+                        .padding(.horizontal, 10).padding(.bottom, 8)
                         .fadeIn(y: -6)
                 }
                 Hairline()
                 Row(icon: "banknote.fill", label: "Day rate") {
                     TextField("0", value: dayRate, format: .currency(code: currencyCode))
                         .textFieldStyle(.plain).multilineTextAlignment(.trailing)
-                        .font(.body.monospacedDigit()).foregroundStyle(.secondary)
+                        .font(.callout.monospacedDigit())
+                        .frame(width: 80, height: 24)
+                        .padding(.horizontal, 9)
+                        .background(Color.primary.opacity(0.08), in: Capsule())
                 }
             }
 
-            HStack {
+            HStack {   // Done sits where the gear was, so opening and closing Settings is the same click
                 Button("Quit WorkLog") { NSApp.terminate(nil) }
-                    .buttonStyle(Pressable()).foregroundStyle(.secondary)
+                    .buttonStyle(Pressable()).foregroundStyle(.secondary).font(.caption)
                 Spacer()
-                Text("Version \(appVersion)").foregroundStyle(.tertiary)
+                Button(welcome ? "Start" : "Done") { addAuthor(); done() }   // a name typed but not added still counts
+                    .buttonStyle(.borderedProminent).disabled(empty)
             }
-            .font(.caption)
+        }
+        .onChange(of: authorFocus) { focused in
+            if !focused { addAuthor(); addingAuthor = false }   // clicking away keeps what was typed
         }
     }
 
@@ -961,7 +1090,7 @@ struct SettingsView: View {
             } label: {
                 Text(Calendar.current.veryShortWeekdaySymbols[d - 1])
                     .font(.callout.weight(.semibold))
-                    .frame(maxWidth: .infinity, minHeight: 28)
+                    .frame(maxWidth: .infinity, minHeight: 26)
                     .foregroundStyle(on ? Color.white : Color.secondary)
                     .background(on ? gold : Color.primary.opacity(0.07), in: RoundedRectangle(cornerRadius: 7, style: .continuous))
             }
@@ -972,11 +1101,6 @@ struct SettingsView: View {
 
     var startText: String {
         keyFmt.date(from: settings.start).map { DateFormatter.localizedString(from: $0, dateStyle: .medium, timeStyle: .none) } ?? settings.start
-    }
-
-    var startDate: Binding<Date> {
-        Binding(get: { keyFmt.date(from: settings.start) ?? Date() },
-                set: { d in store.update { $0.start = keyFmt.string(from: d) } })
     }
 
     /// Changing the rate starts it from today; earlier days keep what they paid.
