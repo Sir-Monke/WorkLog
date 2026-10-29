@@ -22,7 +22,7 @@
 1. Download **[WorkLog.zip](https://github.com/Sir-Monke/WorkLog/releases/latest/download/WorkLog.zip)** and unzip it.
 2. Open **WorkLog**. It moves itself into Applications, starts at login and lives in your menu bar.
    If macOS won't open it the first time, go to System Settings › Privacy & Security and click **Open Anyway**.
-3. Choose the folder with your repos and notes. Your git name and email are filled in for you.
+3. Add the folders with your repos and notes. Your git name and email are filled in for you.
 
 ## What it does
 
@@ -30,7 +30,7 @@
 - **Counts extra days.** Any day outside your contracted days with work on it, with the gross pay.
 - **Writes the notes.** One line per day from Claude Code, or type your own.
 - **Ready for Slack.** Copies the month as plain text in one click.
-- **Keeps history safe.** Past months lock, a new day rate only applies from the day you set it, and a day you remove stays removed.
+- **Keeps history safe.** Past months lock but stay readable, a new day rate only applies from the day you set it, and a day you remove stays removed.
 
 ## Settings
 
@@ -38,9 +38,9 @@ Click the gear in the panel.
 
 | Setting | What it does |
 | --- | --- |
-| Work folder | Where your repo clones and notes live |
-| Git name or email | Whose commits count |
-| Contracted days | Your normal working days; any other day you work is extra |
+| Folders | Where your repo clones and notes live; add as many as you like |
+| Authors | Your git names or emails; only their commits count |
+| Working days | Your normal working days; any other day you work is extra |
 | Count from | The first day to count |
 | Day rate | Gross pay per extra day, in your currency |
 
