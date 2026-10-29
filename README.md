@@ -5,7 +5,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/Sir-Monke/WorkLog/releases/latest"><img src="https://img.shields.io/badge/download-macOS%2013%2B-D6943D?logo=apple&logoColor=white" alt="Download for macOS 13+"></a>
+  <img src="https://img.shields.io/badge/macOS-13%2B-D6943D?logo=apple&logoColor=white" alt="macOS 13+">
   <img src="https://img.shields.io/badge/licence-MIT-D6943D" alt="MIT licence">
   <img src="https://img.shields.io/badge/built%20with-SwiftUI-D6943D?logo=swift&logoColor=white" alt="Built with SwiftUI">
 </p>
@@ -19,7 +19,7 @@
 
 ## Install
 
-1. Download **[WorkLog.zip](https://github.com/Sir-Monke/WorkLog/releases/latest/download/WorkLog.zip)** and unzip it.
+1. Download `WorkLog.zip` from the [latest release](https://github.com/Sir-Monke/WorkLog/releases/latest) and unzip it.
 2. Open **WorkLog**. It moves itself into Applications, starts at login and lives in your menu bar.
    If macOS won't open it the first time, go to System Settings › Privacy & Security and click **Open Anyway**.
 3. Add the folders with your repos and notes. Your git name and email are filled in for you.
