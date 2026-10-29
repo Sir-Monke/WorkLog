@@ -4,8 +4,8 @@ import SwiftUI
 
 /// Your setup, edited in the panel's settings and saved as you change it.
 struct Settings: Codable {
-    var folder = ""                              // repo clones and notes; nothing is scanned until it's chosen
-    var authors = ""                             // comma separated, matched against git author name <email>
+    var folders: [String] = []                   // repo clones and notes; nothing is scanned until one is added
+    var authors: [String] = []                   // matched against git author name <email>
     var start = String(today().prefix(7)) + "-01"   // count extra days from here
     var weekdays: Set<Int> = [2, 3, 4, 5, 6]     // contracted days, Sunday = 1; any other day you work is extra
     var rates: [Rate] = []                       // gross day rate from a date; see setRate
@@ -19,14 +19,36 @@ struct Settings: Codable {
         return s
     }
     func save() { UserDefaults.standard.set(try? JSONEncoder().encode(self), forKey: "settings") }
-    var authorList: [String] { authors.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty } }
+}
+
+extension Settings {
+    private enum Old: String, CodingKey { case folder, authors }
+
+    /// Reads settings from any version. 1.0 kept one folder, and authors as one comma-separated string.
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        let old = try decoder.container(keyedBy: Old.self)
+        if let list = try c.decodeIfPresent([String].self, forKey: .folders) {
+            folders = list
+        } else if let one = try old.decodeIfPresent(String.self, forKey: .folder), !one.isEmpty {
+            folders = [one]
+        }
+        if let list = try? c.decode([String].self, forKey: .authors) {
+            authors = list
+        } else if let line = try old.decodeIfPresent(String.self, forKey: .authors) {
+            authors = line.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
+        }
+        start = try c.decode(String.self, forKey: .start)
+        weekdays = try c.decode(Set<Int>.self, forKey: .weekdays)
+        rates = try c.decode([Rate].self, forKey: .rates)
+    }
 }
 var settings = Settings.load()
 
 /// Your git name and email from git config.
-func gitIdentity() -> String {
+func gitIdentity() -> [String] {
     ["user.name", "user.email"].map { git(["config", "--global", $0]).trimmingCharacters(in: .whitespacesAndNewlines) }
-        .filter { !$0.isEmpty }.joined(separator: ", ")
+        .filter { !$0.isEmpty }
 }
 
 let historyURL = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
@@ -187,7 +209,8 @@ func prompt(_ day: String, _ p: Proof) -> String {
 /// The first heading of a Markdown or text note, if it has one.
 func title(_ path: String) -> String? {
     guard path.hasSuffix(".md") || path.hasSuffix(".txt"),
-          let h = FileHandle(forReadingAtPath: URL(fileURLWithPath: settings.folder).appendingPathComponent(path).path) else { return nil }
+          let dir = settings.folders.first(where: { FileManager.default.fileExists(atPath: $0 + "/" + path) }),
+          let h = FileHandle(forReadingAtPath: dir + "/" + path) else { return nil }
     defer { try? h.close() }
     let head = String(decoding: h.readData(ofLength: 4096), as: UTF8.self)
     let line = head.split(whereSeparator: \.isNewline).first { $0.hasPrefix("#") }
@@ -242,63 +265,63 @@ func run(_ exe: String, _ args: [String], cwd: URL? = nil, timeout: TimeInterval
     return (text, p.terminationStatus == 0)
 }
 
-/// Every day since your start date with your commits or file edits in your work folder.
+/// Every day since your start date with your commits or file edits in your work folders.
 func collect(_ s: Settings) -> [String: Proof] {
     var out: [String: Proof] = [:]
-    guard !s.folder.isEmpty else { return out }
+    var seen = Set<String>()   // the same commit in several clones or folders counts once
+    var paths: [String: [String]] = [:]
     let fm = FileManager.default
-    let root = URL(fileURLWithPath: s.folder)
+    let start = keyFmt.date(from: s.start) ?? Date()
+    let keys: [URLResourceKey] = [.contentModificationDateKey, .isDirectoryKey]
 
-    // Commits: every repo clone at the top level; the same commit in several clones counts once.
-    // Without an author everyone's commits would count, so they're skipped until one is set.
-    var seen = Set<String>()
-    let names = s.authorList.isEmpty ? [] : ((try? fm.contentsOfDirectory(atPath: root.path)) ?? []).sorted()
-    for name in names where fm.fileExists(atPath: root.appendingPathComponent(name + "/.git").path) {
-        let dir = root.appendingPathComponent(name).path
-        // Real repo name from the remote URL, so clones like MyApp-PR12 read as MyApp.
-        let url = git(["-C", dir, "config", "--get-regexp", "^remote\\..*\\.url$"])
-            .split(separator: "\n").first?.split(separator: " ").last.map(String.init) ?? ""
-        var repo = url.split(separator: "/").last.map(String.init) ?? name
-        if repo.hasSuffix(".git") { repo = String(repo.dropLast(4)) }
-        if repo.isEmpty || repo.contains(":") { repo = name }
+    for root in s.folders.map({ URL(fileURLWithPath: $0) }) {
+        // Commits: every repo clone at the top level; the same commit in several clones counts once.
+        // Without an author everyone's commits would count, so they're skipped until one is set.
+        let names = s.authors.isEmpty ? [] : ((try? fm.contentsOfDirectory(atPath: root.path)) ?? []).sorted()
+        for name in names where fm.fileExists(atPath: root.appendingPathComponent(name + "/.git").path) {
+            let dir = root.appendingPathComponent(name).path
+            // Real repo name from the remote URL, so clones like MyApp-PR12 read as MyApp.
+            let url = git(["-C", dir, "config", "--get-regexp", "^remote\\..*\\.url$"])
+                .split(separator: "\n").first?.split(separator: " ").last.map(String.init) ?? ""
+            var repo = url.split(separator: "/").last.map(String.init) ?? name
+            if repo.hasSuffix(".git") { repo = String(repo.dropLast(4)) }
+            if repo.isEmpty || repo.contains(":") { repo = name }
 
-        let args = ["-C", dir, "log", "--all", "--no-merges",
-                    "--since=\(s.start) 00:00", "--date=format-local:%Y-%m-%d %H:%M",
-                    "--format=%H%x1f%ad%x1f%cd%x1f%s%x1f%b%x1e"] + s.authorList.map { "--author=" + $0 }
-        for record in git(args).split(separator: "\u{1e}") {
-            let f = record.trimmingCharacters(in: .whitespacesAndNewlines).components(separatedBy: "\u{1f}")
-            guard f.count == 5 else { continue }
-            let body = f[4].split(whereSeparator: \.isNewline)
-                .map { $0.trimmingCharacters(in: .whitespaces) }
-                .filter { line in !line.isEmpty && !["co-authored-by", "signed-off-by", "claude-session"].contains { line.lowercased().hasPrefix($0) } }
-                .joined(separator: " ")
-            for stamp in [f[1], f[2]] {   // authored and committed (rebase, amend) both prove work that day
-                let day = String(stamp.prefix(10))
-                guard day >= s.start, seen.insert(f[0] + day).inserted else { continue }
-                out[day, default: Proof()].commits.append(Commit(repo: repo, subject: f[3], hm: String(stamp.suffix(5)),
-                                                                 body: body.isEmpty ? nil : String(body.prefix(300))))
+            let args = ["-C", dir, "log", "--all", "--no-merges",
+                        "--since=\(s.start) 00:00", "--date=format-local:%Y-%m-%d %H:%M",
+                        "--format=%H%x1f%ad%x1f%cd%x1f%s%x1f%b%x1e"] + s.authors.map { "--author=" + $0 }
+            for record in git(args).split(separator: "\u{1e}") {
+                let f = record.trimmingCharacters(in: .whitespacesAndNewlines).components(separatedBy: "\u{1f}")
+                guard f.count == 5 else { continue }
+                let body = f[4].split(whereSeparator: \.isNewline)
+                    .map { $0.trimmingCharacters(in: .whitespaces) }
+                    .filter { line in !line.isEmpty && !["co-authored-by", "signed-off-by", "claude-session"].contains { line.lowercased().hasPrefix($0) } }
+                    .joined(separator: " ")
+                for stamp in [f[1], f[2]] {   // authored and committed (rebase, amend) both prove work that day
+                    let day = String(stamp.prefix(10))
+                    guard day >= s.start, seen.insert(f[0] + day).inserted else { continue }
+                    out[day, default: Proof()].commits.append(Commit(repo: repo, subject: f[3], hm: String(stamp.suffix(5)),
+                                                                     body: body.isEmpty ? nil : String(body.prefix(300))))
+                }
             }
         }
-    }
 
-    // Files: modification dates, grouped by top-level folder, plus the paths themselves.
-    var paths: [String: [String]] = [:]
-    let start = keyFmt.date(from: s.start) ?? Date()
-    let depth = root.pathComponents.count
-    let keys: [URLResourceKey] = [.contentModificationDateKey, .isDirectoryKey]
-    if let en = fm.enumerator(at: root, includingPropertiesForKeys: keys, options: [.skipsHiddenFiles, .skipsPackageDescendants]) {
-        for case let url as URL in en {
-            guard let v = try? url.resourceValues(forKeys: Set(keys)) else { continue }
-            if v.isDirectory == true {
-                if skipDirs.contains(url.lastPathComponent) { en.skipDescendants() }
-                continue
+        // Files: modification dates, grouped by top-level folder, plus the paths themselves.
+        let depth = root.pathComponents.count
+        if let en = fm.enumerator(at: root, includingPropertiesForKeys: keys, options: [.skipsHiddenFiles, .skipsPackageDescendants]) {
+            for case let url as URL in en {
+                guard let v = try? url.resourceValues(forKeys: Set(keys)) else { continue }
+                if v.isDirectory == true {
+                    if skipDirs.contains(url.lastPathComponent) { en.skipDescendants() }
+                    continue
+                }
+                let parts = url.pathComponents
+                guard let m = v.contentModificationDate, m >= start, parts.count > depth else { continue }
+                let top = parts[depth] + (parts.count > depth + 1 ? "/" : "")
+                let day = keyFmt.string(from: m)
+                out[day, default: Proof()].files[top, default: 0] += 1
+                paths[day, default: []].append(parts[depth...].joined(separator: "/"))
             }
-            let parts = url.pathComponents
-            guard let m = v.contentModificationDate, m >= start, parts.count > depth else { continue }
-            let top = parts[depth] + (parts.count > depth + 1 ? "/" : "")
-            let day = keyFmt.string(from: m)
-            out[day, default: Proof()].files[top, default: 0] += 1
-            paths[day, default: []].append(parts[depth...].joined(separator: "/"))
         }
     }
     for (day, list) in paths { out[day]?.paths = shallowest(list) }
@@ -499,6 +522,7 @@ struct RowGroup<Content: View>: View {
 struct Row<Trailing: View>: View {
     let icon: String
     let label: String
+    var detail: String? = nil
     @ViewBuilder let trailing: Trailing
 
     var body: some View {
@@ -508,7 +532,10 @@ struct Row<Trailing: View>: View {
                 .foregroundStyle(.white)
                 .frame(width: 22, height: 22)
                 .background(gold.gradient, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
-            Text(label)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(label)
+                if let detail { Text(detail).font(.caption).foregroundStyle(.secondary) }
+            }
             Spacer(minLength: 12)
             trailing
         }
@@ -525,10 +552,38 @@ struct Hairline: View {
     }
 }
 
+/// One entry in a settings list. Its remove button only shows under the pointer, so the list stays quiet.
+struct ListItem: View {
+    let text: String
+    var help = ""
+    var removable = true
+    let remove: () -> Void
+    @State private var over = false
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Text(text).lineLimit(1).truncationMode(.middle)
+            Spacer(minLength: 8)
+            Button(action: remove) { Image(systemName: "minus.circle.fill") }
+                .buttonStyle(.plain)
+                .foregroundStyle(.secondary)
+                .opacity(removable && over ? 1 : 0)
+                .disabled(!removable)
+                .help("Remove")
+        }
+        .padding(.leading, 42).padding(.trailing, 10)
+        .frame(minHeight: 30)
+        .contentShape(Rectangle())
+        .onHover { h in withAnimation(.easeOut(duration: 0.12)) { over = h } }
+        .help(help)
+    }
+}
+
 /// Rows tint a touch while pressed, the way list rows do.
 struct RowPress: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
+            .contentShape(Rectangle())
             .background(Color.primary.opacity(configuration.isPressed ? 0.06 : 0))
             .animation(.easeOut(duration: 0.12), value: configuration.isPressed)
     }
@@ -667,7 +722,7 @@ struct Panel: View {
 
     var body: some View {
         Group {
-            if showSettings || settings.folder.isEmpty {   // first run starts here
+            if showSettings || settings.folders.isEmpty {   // first run starts here
                 SettingsView(store: store) {
                     showSettings = false
                     store.scan()
@@ -682,7 +737,7 @@ struct Panel: View {
         .tint(gold)
         .onAppear {
             store.scan()
-            if settings.folder.isEmpty { showSettings = true }   // stay on settings after the folder is picked
+            if settings.folders.isEmpty { showSettings = true }   // stay on settings after the folder is picked
         }
         // The note fills in from what you did that day: your own note, else Claude's, else the commits.
         .onChange(of: day) { d in filled = auto(d); note = filled }
@@ -813,41 +868,49 @@ struct Panel: View {
 struct SettingsView: View {
     @ObservedObject var store: Store
     let done: () -> Void
-    @State private var welcome = settings.folder.isEmpty
+    @State private var welcome = settings.folders.isEmpty
     @State private var pickingDate = false
+    @State private var newAuthor = ""
 
     var body: some View {
-        let empty = settings.folder.isEmpty
+        let empty = settings.folders.isEmpty
         VStack(alignment: .leading, spacing: 16) {
             HStack(alignment: .center) {
                 VStack(alignment: .leading, spacing: 3) {
                     Text(welcome ? "Welcome to WorkLog" : "Settings").font(.title3.weight(.semibold))
                     if welcome {
-                        Text("Choose the folder with your repos and notes.").font(.callout).foregroundStyle(.secondary)
+                        Text("Add the folders with your repos and notes.").font(.callout).foregroundStyle(.secondary)
                     }
                 }
                 Spacer()
-                Button(welcome ? "Start" : "Done", action: done)
-                    .buttonStyle(.borderedProminent).keyboardShortcut(.defaultAction).disabled(empty)
+                Button(welcome ? "Start" : "Done") { addAuthor(); done() }   // a name typed but not added still counts
+                    .buttonStyle(.borderedProminent).disabled(empty)
             }
 
             RowGroup {
-                Button(action: choose) {
-                    Row(icon: "folder.fill", label: "Work folder") {
-                        Text(empty ? "Choose…" : URL(fileURLWithPath: settings.folder).lastPathComponent)
-                            .lineLimit(1)
-                            .foregroundStyle(empty ? gold : Color.secondary)
-                        Image(systemName: "chevron.right").font(.caption.weight(.semibold)).foregroundStyle(.tertiary)
+                Row(icon: "folder.fill", label: "Work folders", detail: "Repos and notes to check") { EmptyView() }
+                ForEach(settings.folders, id: \.self) { f in
+                    ListItem(text: URL(fileURLWithPath: f).lastPathComponent, help: (f as NSString).abbreviatingWithTildeInPath,
+                             removable: settings.folders.count > 1) {
+                        store.update { s in s.folders.removeAll { $0 == f } }
                     }
                 }
-                .buttonStyle(RowPress())
-                .help(settings.folder)
-                Hairline()
-                Row(icon: "person.fill", label: "Git author") {
-                    TextField("Name or email", text: store.binding(\.authors))
-                        .textFieldStyle(.plain).multilineTextAlignment(.trailing).foregroundStyle(.secondary)
+                Button(action: addFolders) {
+                    Text("Add folder…").fontWeight(.medium).foregroundStyle(gold)
+                        .padding(.leading, 42)
+                        .frame(maxWidth: .infinity, minHeight: 32, alignment: .leading)
                 }
-                .help("Only these authors' commits count. Separate several with commas.")
+                .buttonStyle(RowPress())
+                Hairline()
+                Row(icon: "person.fill", label: "Git authors", detail: "Only their commits count") { EmptyView() }
+                ForEach(settings.authors, id: \.self) { a in
+                    ListItem(text: a) { store.update { s in s.authors.removeAll { $0 == a } } }
+                }
+                TextField("Add a name or email", text: $newAuthor)
+                    .textFieldStyle(.plain)
+                    .padding(.leading, 42).padding(.trailing, 10)
+                    .frame(minHeight: 32)
+                    .onSubmit(addAuthor)
             }
 
             RowGroup {
@@ -921,17 +984,26 @@ struct SettingsView: View {
         Binding(get: { rate(today()) }, set: { v in store.update { setRate(&$0, v, from: today()) } })
     }
 
-    func choose() {
+    func addFolders() {
         NSApp.activate(ignoringOtherApps: true)
         let panel = NSOpenPanel()
         panel.canChooseFiles = false
         panel.canChooseDirectories = true
-        panel.prompt = "Choose"
-        panel.message = "Choose the folder that holds your repo clones and notes"
-        if panel.runModal() == .OK, let url = panel.url {
-            store.update { $0.folder = url.path }
-            store.scan()
-        }
+        panel.allowsMultipleSelection = true
+        panel.prompt = "Add"
+        panel.message = "Choose the folders that hold your repo clones and notes"
+        guard panel.runModal() == .OK else { return }
+        let new = panel.urls.map(\.path).filter { !settings.folders.contains($0) }
+        guard !new.isEmpty else { return }
+        store.update { $0.folders += new }
+        store.scan()
+    }
+
+    func addAuthor() {
+        let a = newAuthor.trimmingCharacters(in: .whitespaces)
+        newAuthor = ""
+        guard !a.isEmpty, !settings.authors.contains(a) else { return }
+        store.update { $0.authors.append(a) }
     }
 }
 
@@ -971,7 +1043,7 @@ func installAndRelaunch() {
             if others.contains(where: { $0 != NSRunningApplication.current && $0.bundleURL?.path.contains("/Applications/") == true }) { exit(0) }   // already running
             return
         }
-        settings = Settings(folder: "", authors: "", start: "2026-01-01", weekdays: [2, 3, 4, 5, 6], rates: [])   // not saved
+        settings = Settings(folders: [], authors: [], start: "2026-01-01", weekdays: [2, 3, 4, 5, 6], rates: [])   // not saved
         precondition(isExtra("2026-10-03") && isExtra("2026-10-04"), "Sat and Sun are extra")
         precondition(!isExtra("2026-10-06") && !isExtra("2025-12-27"), "Tue, and anything before the start date, is not")
         let c = { (r: String, s: String, hm: String) in Commit(repo: r, subject: s, hm: hm) }
@@ -1003,7 +1075,10 @@ func installAndRelaunch() {
         precondition(pay(["2025-06-07", "2026-10-04", "2026-10-10"]) == 350, "each day pays the rate it had")
         setRate(&s, 160, from: "2026-10-05")
         precondition(s.rates.count == 2 && rate("2026-10-10", s.rates) == 160, "a second change the same day replaces the first")
-        precondition(collect(Settings(folder: "")).isEmpty, "nothing is scanned until a folder is chosen")
+        precondition(collect(Settings()).isEmpty, "nothing is scanned until a folder is added")
+        let v1 = #"{"folder":"/w","authors":"Ann, ann@x.io","start":"2026-01-01","weekdays":[2],"rates":[]}"#
+        let old = try! JSONDecoder().decode(Settings.self, from: Data(v1.utf8))
+        precondition(old.folders == ["/w"] && old.authors == ["Ann", "ann@x.io"], "1.0 settings carry over")
         settings = Settings.load()   // your real setup, for the printout below
         let all = collect(settings).mapValues { merged(nil, $0) }
         for month in Set(all.keys.map { String($0.prefix(7)) }).sorted() { print(summary(month, all), "\n") }
