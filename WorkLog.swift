@@ -442,35 +442,82 @@ func collect(_ s: Settings) -> [String: Proof] {
 }
 
 let gold = Color(red: 0.84, green: 0.58, blue: 0.24)
+let panelSpring = Animation.spring(response: 0.32, dampingFraction: 0.86)   // every move in the panel uses this
+let appVersion = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? ""
 
-/// "October 2026  ‹ ›", limited to the contract start and this month.
+extension View {
+    /// A softly tinted field instead of a bordered box.
+    func well(height: CGFloat = 30) -> some View {
+        padding(.horizontal, 10)
+            .frame(maxWidth: .infinity, minHeight: height, alignment: .leading)
+            .background(Color.primary.opacity(0.055), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+    }
+}
+
+/// Presses in a touch, so plain rows still feel like buttons.
+struct Pressable: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .contentShape(Rectangle())
+            .scaleEffect(configuration.isPressed ? 0.96 : 1)
+            .opacity(configuration.isPressed ? 0.8 : 1)
+            .animation(.spring(response: 0.22, dampingFraction: 0.7), value: configuration.isPressed)
+    }
+}
+
+/// A small icon button that lights up under the pointer.
+struct IconButton: View {
+    let symbol: String
+    var help = ""
+    var tint: Color? = nil
+    let action: () -> Void
+    @State private var over = false
+    @Environment(\.isEnabled) private var enabled
+
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: symbol)
+                .font(.system(size: 13, weight: .semibold))
+                .frame(width: 26, height: 26)
+                .background(Color.primary.opacity(over && enabled ? 0.08 : 0), in: Circle())
+        }
+        .buttonStyle(Pressable())
+        .foregroundStyle(tint ?? (over ? Color.primary : Color.secondary))
+        .opacity(enabled ? 1 : 0.3)
+        .onHover { h in withAnimation(.easeOut(duration: 0.12)) { over = h } }
+        .help(help)
+    }
+}
+
+/// "October 2026  ‹ ›", limited to the start date and this month.
 struct MonthHeader: View {
     @Binding var month: String
     var unlocked: Binding<Bool>? = nil   // set for past months: shows the padlock
 
     var body: some View {
-        HStack {
-            Text(keyFmt.date(from: month + "-01").map { monthFmt.string(from: $0) } ?? month).font(.title3.weight(.semibold))
+        HStack(spacing: 2) {
+            Text(keyFmt.date(from: month + "-01").map { monthFmt.string(from: $0) } ?? month)
+                .font(.title3.weight(.semibold))
+                .padding(.trailing, 4)
             if let unlocked {
-                Button { unlocked.wrappedValue.toggle() } label: {
-                    Image(systemName: unlocked.wrappedValue ? "lock.open.fill" : "lock.fill").frame(width: 26, height: 26)
+                IconButton(symbol: unlocked.wrappedValue ? "lock.open.fill" : "lock.fill",
+                           help: unlocked.wrappedValue ? "Lock this month" : "Unlock to change this month",
+                           tint: unlocked.wrappedValue ? gold : nil) {
+                    withAnimation(panelSpring) { unlocked.wrappedValue.toggle() }
                 }
-                .foregroundStyle(unlocked.wrappedValue ? gold : Color.secondary)
-                .help(unlocked.wrappedValue ? "Lock this month" : "Unlock to change this month")
             }
             Spacer()
-            Button { shift(-1) } label: { Image(systemName: "chevron.left").frame(width: 26, height: 26) }
+            IconButton(symbol: "chevron.left", help: "Previous month") { shift(-1) }
                 .disabled(month <= String(settings.start.prefix(7)))
-            Button { shift(1) } label: { Image(systemName: "chevron.right").frame(width: 26, height: 26) }
+            IconButton(symbol: "chevron.right", help: "Next month") { shift(1) }
                 .disabled(month >= String(today().prefix(7)))
         }
-        .buttonStyle(.borderless)
     }
 
     func shift(_ n: Int) {
         guard let first = keyFmt.date(from: month + "-01"),
               let next = Calendar(identifier: .gregorian).date(byAdding: .month, value: n, to: first) else { return }
-        month = String(keyFmt.string(from: next).prefix(7))
+        withAnimation(panelSpring) { month = String(keyFmt.string(from: next).prefix(7)) }
     }
 }
 
@@ -508,7 +555,7 @@ struct MonthGrid: View {
         let open = isExtra(d) && d <= today()
         let worked = open && counted(history[d])
         let picked = d == selected
-        let over = hovered == d && open
+        let over = hovered == d && open && !locked
         let fg: Color = picked ? .white : d == today() || worked ? gold : open ? .primary : Color.secondary.opacity(0.35)
         let bg: Color = picked ? gold : worked ? gold.opacity(over ? 0.3 : 0.16) : over ? Color.primary.opacity(0.07) : .clear
         return Button { pick(d) } label: {
@@ -517,11 +564,14 @@ struct MonthGrid: View {
                 .frame(width: size, height: size)
                 .foregroundStyle(fg)
                 .background(bg, in: RoundedRectangle(cornerRadius: size * 0.3, style: .continuous))
-                .contentShape(Rectangle())
+                .overlay {   // a quiet ring marks today
+                    RoundedRectangle(cornerRadius: size * 0.3, style: .continuous)
+                        .strokeBorder(gold.opacity(d == today() && !picked ? 0.45 : 0), lineWidth: 1)
+                }
         }
-        .buttonStyle(.plain)
+        .buttonStyle(Pressable())
         .disabled(!open || locked)
-        .onHover { hovered = $0 ? d : (hovered == d ? nil : hovered) }
+        .onHover { h in withAnimation(.easeOut(duration: 0.12)) { hovered = h ? d : (hovered == d ? nil : hovered) } }
         .help(history[d].map(brief) ?? "")
     }
 
@@ -547,77 +597,15 @@ struct Panel: View {
     @State private var showSettings = false
 
     var body: some View {
-        let days = extraDays(month, store.history)
-        let count = days.count
-        VStack(alignment: .leading, spacing: 18) {
-          if showSettings || settings.folder.isEmpty {   // first run starts here
-            SettingsView(store: store) { showSettings = false; store.scan() }
-          } else {
-            MonthHeader(month: $month, unlocked: past ? $unlocked : nil)
-
-            HStack(alignment: .firstTextBaseline, spacing: 8) {
-                Text("\(count)").font(.system(size: 44, weight: .semibold, design: .rounded)).foregroundStyle(gold)
-                Text(count == 1 ? "extra day" : "extra days").font(.title3).foregroundStyle(.secondary)
-                Spacer()
-                VStack(alignment: .trailing, spacing: 1) {
-                    Text(money(pay(days))).font(.title3.weight(.semibold).monospacedDigit())
-                    Text("gross").font(.caption).foregroundStyle(.secondary)
+        ZStack(alignment: .top) {   // the two pages cross over instead of stacking up mid-slide
+            if showSettings || settings.folder.isEmpty {   // first run starts here
+                SettingsView(store: store) {
+                    withAnimation(panelSpring) { showSettings = false }
+                    store.scan()
                 }
-            }
-
-            MonthGrid(month: month, size: 36, history: store.history, selected: day, locked: past && !unlocked) { d in day = day == d ? nil : d }
-
-            VStack(alignment: .leading, spacing: 10) {
-                if let d = day {
-                    HStack(alignment: .firstTextBaseline) {
-                        Text(keyFmt.date(from: d).map { fmt("EEEE d MMMM", "en_GB").string(from: $0) } ?? d).font(.headline)
-                        Spacer()
-                        Text(money(rate(d))).font(.callout.monospacedDigit()).foregroundStyle(.secondary)
-                    }
-                    TextField("What you did", text: $note, axis: .vertical)
-                        .lineLimit(4, reservesSpace: true)
-                        .font(.callout)
-                        .textFieldStyle(.plain)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(10)
-                        .background(Color.primary.opacity(0.06), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-                        .onSubmit(save)
-                    HStack(spacing: 8) {
-                        if counted(store.history[d]) {
-                            Button("Remove", role: .destructive) { store.remove(d); day = nil }.tint(.red)
-                        }
-                        Spacer()
-                        Button("Cancel") { day = nil }
-                        Button(counted(store.history[d]) ? "Save" : "Add day", action: save)
-                            .buttonStyle(.borderedProminent).keyboardShortcut(.defaultAction)
-                    }
-                } else {
-                    Button {
-                        NSPasteboard.general.clearContents()
-                        NSPasteboard.general.setString(summary(month, store.history), forType: .string)
-                        copied = true
-                        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { copied = false }
-                    } label: {
-                        Label(copied ? "Copied" : "Copy for Slack", systemImage: copied ? "checkmark" : "doc.on.doc").frame(maxWidth: .infinity)
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .controlSize(.large)
-                    .disabled(count == 0)
-                }
-            }
-          }
-
-            HStack(spacing: 6) {
-                if store.summarising {
-                    ProgressView().controlSize(.small)
-                    Text("Writing notes… \(store.progress)").font(.caption).foregroundStyle(.secondary)
-                } else if let e = store.error {
-                    Text(e).font(.caption).foregroundStyle(.red).lineLimit(2)
-                }
-                Spacer()
-                Button { showSettings.toggle() } label: { Image(systemName: "gearshape") }
-                    .buttonStyle(.borderless).foregroundStyle(.secondary).help("Settings")
-                    .disabled(settings.folder.isEmpty)
+                .transition(.opacity.combined(with: .offset(x: 24)))
+            } else {
+                calendar.transition(.opacity.combined(with: .offset(x: -24)))
             }
         }
         .padding(20)
@@ -636,15 +624,106 @@ struct Panel: View {
         .onChange(of: unlocked) { if !$0 { day = nil } }
     }
 
+    var calendar: some View {
+        let days = extraDays(month, store.history)
+        let count = days.count
+        return VStack(alignment: .leading, spacing: 18) {
+            MonthHeader(month: $month, unlocked: past ? $unlocked : nil)
+
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Text("\(count)").font(.system(size: 44, weight: .semibold, design: .rounded)).foregroundStyle(gold)
+                    .contentTransition(.numericText())
+                Text(count == 1 ? "extra day" : "extra days").font(.title3).foregroundStyle(.secondary)
+                Spacer()
+                VStack(alignment: .trailing, spacing: 1) {
+                    Text(money(pay(days))).font(.title3.weight(.semibold).monospacedDigit())
+                        .contentTransition(.numericText())
+                    Text("gross").font(.caption).foregroundStyle(.secondary)
+                }
+            }
+
+            ZStack {   // months fade into each other
+                MonthGrid(month: month, size: 36, history: store.history, selected: day, locked: past && !unlocked) { d in
+                    withAnimation(panelSpring) { day = day == d ? nil : d }
+                }
+                .id(month)
+                .transition(.opacity)
+            }
+
+            ZStack(alignment: .top) {
+                if let d = day {
+                    editor(d).transition(.opacity.combined(with: .offset(y: -8)))
+                } else {
+                    copyButton(disabled: count == 0).transition(.opacity)
+                }
+            }
+
+            HStack(spacing: 6) {
+                if store.summarising {
+                    ProgressView().controlSize(.small)
+                    Text("Writing notes… \(store.progress)").font(.caption).foregroundStyle(.secondary)
+                        .contentTransition(.numericText())
+                } else if let e = store.error {
+                    Text(e).font(.caption).foregroundStyle(.red).lineLimit(2)
+                }
+                Spacer()
+                IconButton(symbol: "gearshape", help: "Settings") { withAnimation(panelSpring) { showSettings = true } }
+            }
+            .animation(.easeInOut(duration: 0.2), value: store.summarising)
+        }
+    }
+
+    func editor(_ d: String) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .firstTextBaseline) {
+                Text(keyFmt.date(from: d).map { fmt("EEEE d MMMM", "en_GB").string(from: $0) } ?? d).font(.headline)
+                Spacer()
+                Text(money(rate(d))).font(.callout.monospacedDigit()).foregroundStyle(.secondary)
+            }
+            TextField("What you did", text: $note, axis: .vertical)
+                .lineLimit(4, reservesSpace: true)
+                .font(.callout)
+                .textFieldStyle(.plain)
+                .padding(.vertical, 10)
+                .well()
+                .onSubmit(save)
+            HStack(spacing: 8) {
+                if counted(store.history[d]) {
+                    Button("Remove", role: .destructive) { store.remove(d); close() }.tint(.red)
+                }
+                Spacer()
+                Button("Cancel", action: close)
+                Button(counted(store.history[d]) ? "Save" : "Add day", action: save)
+                    .buttonStyle(.borderedProminent).keyboardShortcut(.defaultAction)
+            }
+        }
+    }
+
+    func copyButton(disabled: Bool) -> some View {
+        Button {
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.setString(summary(month, store.history), forType: .string)
+            withAnimation(panelSpring) { copied = true }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { withAnimation(panelSpring) { copied = false } }
+        } label: {
+            Label(copied ? "Copied" : "Copy for Slack", systemImage: copied ? "checkmark" : "doc.on.doc").frame(maxWidth: .infinity)
+        }
+        .buttonStyle(.borderedProminent)
+        .controlSize(.large)
+        .disabled(disabled)
+    }
+
     /// Months before this one are locked until you click the padlock.
     var past: Bool { month < String(today().prefix(7)) }
 
     func auto(_ d: String?) -> String { d.flatMap { store.history[$0] }.map(brief) ?? "" }
 
+    func close() { withAnimation(panelSpring) { day = nil } }
+
     func save() {
         guard let d = day else { return }
         store.setNote(d, note)
-        day = nil
+        close()
     }
 }
 
@@ -653,73 +732,107 @@ struct SettingsView: View {
     @ObservedObject var store: Store
     let done: () -> Void
     @State private var welcome = settings.folder.isEmpty
+    @State private var pickingDate = false
 
     var body: some View {
         let empty = settings.folder.isEmpty
-        VStack(alignment: .leading, spacing: 16) {
-            VStack(alignment: .leading, spacing: 4) {
-                Text(welcome ? "Welcome to WorkLog" : "Settings").font(.title3.weight(.semibold))
-                if welcome {
-                    Text("Choose the folder with your repos and notes to start.").font(.callout).foregroundStyle(.secondary)
-                }
-            }
-
-            field("Work folder") {
-                HStack {
-                    Text(empty ? "None chosen" : (settings.folder as NSString).abbreviatingWithTildeInPath)
-                        .lineLimit(1).truncationMode(.middle)
-                        .foregroundStyle(empty ? Color.secondary : Color.primary)
-                    Spacer()
-                    Button("Choose…", action: choose)
-                }
-            }
-
-            field("Your git name or email") {
-                TextField("Name, email", text: store.binding(\.authors)).textFieldStyle(.roundedBorder)
-            }
-
-            field("Contracted days") {
-                HStack(spacing: 6) {
-                    ForEach([2, 3, 4, 5, 6, 7, 1], id: \.self) { d in
-                        let on = settings.weekdays.contains(d)
-                        Button {
-                            store.update { $0.weekdays.formSymmetricDifference([d]) }   // toggles the day
-                        } label: {
-                            Text(Calendar.current.veryShortWeekdaySymbols[d - 1])
-                                .font(.callout.weight(.medium))
-                                .frame(width: 32, height: 28)
-                                .foregroundStyle(on ? Color.white : Color.primary)
-                                .background(on ? gold : Color.primary.opacity(0.07), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-                                .contentShape(Rectangle())
-                        }
-                        .buttonStyle(.plain)
+        VStack(alignment: .leading, spacing: 18) {
+            HStack(alignment: .center) {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(welcome ? "Welcome to WorkLog" : "Settings").font(.title3.weight(.semibold))
+                    if welcome {
+                        Text("Choose the folder with your repos and notes.").font(.callout).foregroundStyle(.secondary)
                     }
                 }
-            }
-
-            HStack(alignment: .top, spacing: 12) {
-                field("Count from") {
-                    DatePicker("", selection: startDate, displayedComponents: .date).labelsHidden().datePickerStyle(.field)
-                }
-                field("Day rate") {
-                    TextField("0", value: dayRate, format: .currency(code: currencyCode)).textFieldStyle(.roundedBorder)
-                }
-            }
-
-            HStack {
-                Button("Quit WorkLog") { NSApp.terminate(nil) }.buttonStyle(.borderless).foregroundStyle(.secondary)
                 Spacer()
                 Button(welcome ? "Start" : "Done", action: done)
                     .buttonStyle(.borderedProminent).keyboardShortcut(.defaultAction).disabled(empty)
             }
+
+            section("Work folder") {
+                Button(action: choose) {
+                    HStack(spacing: 8) {
+                        Image(systemName: "folder.fill").foregroundStyle(gold)
+                        Text(empty ? "Choose a folder" : (settings.folder as NSString).abbreviatingWithTildeInPath)
+                            .lineLimit(1).truncationMode(.middle)
+                            .foregroundStyle(empty ? Color.secondary : Color.primary)
+                        Spacer(minLength: 8)
+                        Text(empty ? "Choose" : "Change").fontWeight(.medium).foregroundStyle(gold)
+                    }
+                    .well()
+                }
+                .buttonStyle(Pressable())
+            }
+
+            section("Your git name or email") {
+                TextField("Name, email", text: store.binding(\.authors)).textFieldStyle(.plain).well()
+            }
+
+            section("Working days") {
+                HStack(spacing: 6) {
+                    ForEach([2, 3, 4, 5, 6, 7, 1], id: \.self) { d in
+                        let on = settings.weekdays.contains(d)
+                        Button {
+                            withAnimation(panelSpring) { store.update { $0.weekdays.formSymmetricDifference([d]) } }   // toggles the day
+                        } label: {
+                            Text(Calendar.current.veryShortWeekdaySymbols[d - 1])
+                                .font(.callout.weight(.semibold))
+                                .frame(maxWidth: .infinity, minHeight: 30)
+                                .foregroundStyle(on ? Color.white : Color.secondary)
+                                .background(on ? gold : Color.primary.opacity(0.055), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                        }
+                        .buttonStyle(Pressable())
+                        .help(Calendar.current.weekdaySymbols[d - 1])
+                    }
+                }
+            }
+
+            HStack(alignment: .top, spacing: 10) {
+                section("Count from") {
+                    Button { withAnimation(panelSpring) { pickingDate.toggle() } } label: {
+                        HStack {
+                            Text(startText).foregroundStyle(Color.primary)
+                            Spacer(minLength: 4)
+                            Image(systemName: "chevron.down")
+                                .font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+                                .rotationEffect(.degrees(pickingDate ? 180 : 0))
+                        }
+                        .well()
+                    }
+                    .buttonStyle(Pressable())
+                }
+                section("Day rate") {
+                    TextField("0", value: dayRate, format: .currency(code: currencyCode))
+                        .textFieldStyle(.plain).multilineTextAlignment(.trailing).font(.body.monospacedDigit()).well()
+                }
+            }
+
+            if pickingDate {
+                DatePicker("", selection: startDate, in: ...Date(), displayedComponents: .date)
+                    .datePickerStyle(.graphical).labelsHidden()
+                    .frame(maxWidth: .infinity)
+                    .transition(.opacity.combined(with: .offset(y: -8)))
+            }
+
+            HStack {
+                Button { NSApp.terminate(nil) } label: { Label("Quit WorkLog", systemImage: "power") }
+                    .buttonStyle(Pressable()).foregroundStyle(.secondary)
+                Spacer()
+                Text("Version \(appVersion)").foregroundStyle(.tertiary)
+            }
+            .font(.caption)
         }
     }
 
-    func field<V: View>(_ label: String, @ViewBuilder _ content: () -> V) -> some View {
+    func section<V: View>(_ label: String, @ViewBuilder _ content: () -> V) -> some View {
         VStack(alignment: .leading, spacing: 6) {
             Text(label).font(.caption.weight(.medium)).foregroundStyle(.secondary)
             content()
         }
+    }
+
+    var startText: String {
+        keyFmt.date(from: settings.start).map { DateFormatter.localizedString(from: $0, dateStyle: .medium, timeStyle: .none) } ?? settings.start
     }
 
     var startDate: Binding<Date> {
@@ -740,7 +853,7 @@ struct SettingsView: View {
         panel.prompt = "Choose"
         panel.message = "Choose the folder that holds your repo clones and notes"
         if panel.runModal() == .OK, let url = panel.url {
-            store.update { $0.folder = url.path }
+            withAnimation(panelSpring) { store.update { $0.folder = url.path } }
             store.scan()
         }
     }
